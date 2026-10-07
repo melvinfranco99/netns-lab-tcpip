@@ -1,0 +1,306 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Capas 5-7 · Aplicación</title>
+<meta name="description" content="Sesión, presentación y aplicación con ip netns: HTTP a mano, cookies, codificación, TLS, DNS por dentro y SSH.">
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/app.js"></script>
+</head>
+<body>
+<header class="topbar"><div class="topbar-inner">
+  <a class="brand" href="index.html">netns<span>·</span>lab</a>
+  <nav class="topnav">
+    <a href="index.html">Inicio</a>
+    <a href="capa2.html">Capa 2</a>
+    <a href="capa3.html">Capa 3</a>
+    <a href="capa4.html">Capa 4</a>
+    <a href="capa5.html" class="active">Capas 5-7</a>
+    <a href="permisos.html">Permisos</a>
+    <a href="limpieza.html">Chuleta</a>
+  </nav>
+  <button id="theme-toggle" aria-label="Cambiar tema">◐</button>
+</div></header>
+
+<div class="layout">
+<aside class="toc"><h4>Capas 5-7</h4><ol></ol></aside>
+<main>
+<span class="layer-tag tag-l5">Capas 5, 6 y 7</span>
+<h1>Sesión, presentación y aplicación</h1>
+<p class="lead">En el modelo TCP/IP estas tres capas OSI se funden en una sola: la <strong>capa de aplicación</strong>. Aquí los programas se ponen de acuerdo en <em>qué</em> se dicen (HTTP, DNS, SSH), <em>cómo</em> se codifica (texto, JSON, compresión, cifrado) y <em>cuánto dura</em> la conversación (sesiones).</p>
+
+<div class="table-wrap"><table>
+<tr><th>Capa OSI</th><th>Responsabilidad</th><th>Ejemplos que veremos</th></tr>
+<tr><td>7 Aplicación</td><td>El "idioma" del servicio</td><td>HTTP, DNS, SSH</td></tr>
+<tr><td>6 Presentación</td><td>Formato, codificación, compresión, cifrado</td><td>UTF-8, Base64, gzip, JSON, TLS</td></tr>
+<tr><td>5 Sesión</td><td>Abrir, mantener y retomar conversaciones</td><td>Cookies, keep-alive, reanudación TLS, sesiones SSH</td></tr>
+</table></div>
+
+<h2 id="lab">5.1 Laboratorio base</h2>
+<p>Un cliente (<code>pc1</code>) y un servidor (<code>pc2</code>). Además le damos a pc1 un fichero <code>hosts</code> propio para poder usar el nombre <code>servidor.lab</code>.</p>
+<div class="cmd"><span class="label">host</span><pre><span class="p">$ </span>sudo ip netns add pc1
+<span class="p">$ </span>sudo ip netns add pc2
+<span class="p">$ </span>sudo ip link add eth0 netns pc1 type veth peer name eth0 netns pc2
+<span class="p">$ </span>sudo mkdir -p /etc/netns/pc1
+<span class="p">$ </span>echo "10.0.0.2 servidor.lab" | sudo tee /etc/netns/pc1/hosts</pre></div>
+<div class="cmd"><span class="label">pc1 / pc2</span><pre><span class="p">pc1# </span>ip link set lo up
+<span class="p">pc1# </span>ip link set eth0 up
+<span class="p">pc1# </span>ip addr add 10.0.0.1/24 dev eth0
+<span class="p">pc2# </span>ip link set lo up
+<span class="p">pc2# </span>ip link set eth0 up
+<span class="p">pc2# </span>ip addr add 10.0.0.2/24 dev eth0</pre></div>
+<div class="note"><p><code>ip netns exec</code> monta cada fichero de <code>/etc/netns/pc1/</code> encima del de <code>/etc</code> solo para ese namespace. Así pc1 tiene su propio <code>/etc/hosts</code> sin tocar el tuyo. Entra en pc1 <em>después</em> de crear el fichero: <code>sudo ip netns exec pc1 bash</code> y prueba <code>getent hosts servidor.lab</code>.</p></div>
+
+<!-- ============================================================ -->
+<h2 id="http">5.2 HTTP escrito a mano</h2>
+<h3>Cliente a mano contra un servidor real</h3>
+<div class="cmd"><span class="label">pc2</span><pre><span class="p">pc2# </span>mkdir -p /tmp/lab-http
+<span class="p">pc2# </span>echo "hola, soy la web de pc2" &gt; /tmp/lab-http/index.html
+<span class="p">pc2# </span>python -m http.server 80 --directory /tmp/lab-http</pre></div>
+<p>Con <code>nc -C</code> cada Intro envía <code>\r\n</code>, como exige HTTP. Escribe las dos líneas y después una línea vacía (pulsa Intro dos veces):</p>
+<div class="cmd"><span class="label">pc1</span><pre><span class="p">pc1# </span>nc -C servidor.lab 80
+GET /index.html HTTP/1.1
+Host: servidor.lab
+</pre></div>
+<pre class="out">HTTP/1.0 200 OK
+Server: SimpleHTTP/0.6 Python/3.13
+Date: ...
+Content-type: text/html
+Content-Length: 24
+Last-Modified: ...
+
+hola, soy la web de pc2</pre>
+<figure class="diagram">
+<svg viewBox="0 0 760 230" role="img" aria-label="Estructura de una petición y una respuesta HTTP">
+  <rect x="10" y="10" width="360" height="210" class="box" rx="8"/><text x="190" y="32" text-anchor="middle" class="title">Petición</text>
+  <rect x="25" y="45" width="330" height="30" class="f-l5" rx="4"/><text x="190" y="65" text-anchor="middle" class="white mono">GET /index.html HTTP/1.1</text>
+  <text x="25" y="95" class="small">método · ruta · versión</text>
+  <rect x="25" y="105" width="330" height="50" class="box2" rx="4"/><text x="35" y="125" class="mono">Host: servidor.lab</text><text x="35" y="145" class="mono">User-Agent: curl/8.x</text>
+  <text x="25" y="170" class="small">cabeceras (clave: valor)</text>
+  <text x="25" y="195" class="mono small">(línea vacía) + cuerpo opcional</text>
+  <rect x="390" y="10" width="360" height="210" class="box" rx="8"/><text x="570" y="32" text-anchor="middle" class="title">Respuesta</text>
+  <rect x="405" y="45" width="330" height="30" class="f-l3" rx="4"/><text x="570" y="65" text-anchor="middle" class="white mono">HTTP/1.1 200 OK</text>
+  <text x="405" y="95" class="small">versión · código · texto</text>
+  <rect x="405" y="105" width="330" height="50" class="box2" rx="4"/><text x="415" y="125" class="mono">Content-Type: text/html</text><text x="415" y="145" class="mono">Content-Length: 24</text>
+  <text x="405" y="170" class="small">cabeceras</text>
+  <text x="405" y="195" class="mono small">(línea vacía) + cuerpo: el HTML</text>
+</svg>
+</figure>
+<h3>Servidor a mano contra un cliente real</h3>
+<p>Ahora al revés: tú eres el servidor web. Para el servidor de Python (Ctrl+C) y:</p>
+<div class="cmd"><span class="label">pc2</span><pre><span class="p">pc2# </span>nc -C -l 80</pre></div>
+<div class="cmd"><span class="label">pc1</span><pre><span class="p">pc1# </span>curl -v http://servidor.lab/</pre></div>
+<p>En pc2 aparece la petición de curl. Contesta escribiendo (línea vacía tras las cabeceras):</p>
+<div class="cmd"><span class="label">pc2 · lo que escribes en nc</span><pre>HTTP/1.1 200 OK
+Content-Type: text/plain
+Content-Length: 21
+Set-Cookie: sesion=abc123
+
+hola, escrito a mano
+</pre></div>
+<p>curl muestra tu respuesta. Has sido un servidor web humano.</p>
+<div class="table-wrap"><table>
+<tr><th>Código</th><th>Significado</th><th>Código</th><th>Significado</th></tr>
+<tr><td>200</td><td>OK</td><td>401</td><td>Falta autenticación</td></tr>
+<tr><td>201</td><td>Creado</td><td>403</td><td>Prohibido</td></tr>
+<tr><td>301 / 302</td><td>Redirección permanente / temporal</td><td>404</td><td>No encontrado</td></tr>
+<tr><td>304</td><td>No modificado (usa tu caché)</td><td>500</td><td>Error del servidor</td></tr>
+<tr><td>400</td><td>Petición mal formada</td><td>502 / 503</td><td>Error del proxy / servicio no disponible</td></tr>
+</table></div>
+<div class="table-wrap"><table>
+<tr><th>Método</th><th>Uso</th><th>Prueba con curl</th></tr>
+<tr><td>GET</td><td>Obtener un recurso</td><td><code>curl http://servidor.lab/</code></td></tr>
+<tr><td>HEAD</td><td>Solo cabeceras</td><td><code>curl -I http://servidor.lab/</code></td></tr>
+<tr><td>POST</td><td>Enviar datos</td><td><code>curl -d 'nombre=ana' http://servidor.lab/</code></td></tr>
+<tr><td>PUT / DELETE</td><td>Reemplazar / borrar</td><td><code>curl -X DELETE http://servidor.lab/x</code></td></tr>
+</table></div>
+<p>Con el <code>nc -C -l 80</code> de servidor puedes ver exactamente qué envía curl para cada método.</p>
+
+<!-- ============================================================ -->
+<h2 id="sesion">5.3 Sesiones: cookies y conexiones persistentes</h2>
+<p>HTTP no tiene memoria: cada petición es independiente. Para "recordar" a un usuario (sesión iniciada, carrito) el servidor entrega una <strong>cookie</strong> y el cliente la devuelve en cada petición.</p>
+<figure class="diagram">
+<svg viewBox="0 0 760 210" role="img" aria-label="Flujo de una cookie de sesión">
+  <defs><marker id="ah7" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="arrow-head"/></marker></defs>
+  <rect x="90" y="8" width="140" height="30" class="box" rx="6"/><text x="160" y="28" text-anchor="middle" class="title">navegador</text>
+  <rect x="530" y="8" width="140" height="30" class="box" rx="6"/><text x="600" y="28" text-anchor="middle" class="title">servidor</text>
+  <line x1="160" y1="38" x2="160" y2="205" class="wire dash"/><line x1="600" y1="38" x2="600" y2="205" class="wire dash"/>
+  <line x1="160" y1="60" x2="598" y2="72" class="wire-l5" marker-end="url(#ah7)"/><text x="380" y="58" text-anchor="middle" class="mono">POST /login usuario+clave</text>
+  <line x1="600" y1="100" x2="162" y2="112" class="wire-l5" marker-end="url(#ah7)"/><text x="380" y="98" text-anchor="middle" class="mono">200 OK · Set-Cookie: sesion=abc123</text>
+  <line x1="160" y1="145" x2="598" y2="157" class="wire-l5" marker-end="url(#ah7)"/><text x="380" y="143" text-anchor="middle" class="mono">GET /perfil · Cookie: sesion=abc123</text>
+  <text x="620" y="180" class="small">"abc123 es Ana"</text>
+  <line x1="600" y1="185" x2="162" y2="197" class="wire-l5" marker-end="url(#ah7)"/><text x="380" y="183" text-anchor="middle" class="mono">200 OK · Hola, Ana</text>
+</svg>
+</figure>
+<div class="cmd"><span class="label">pc1 (con el nc -C -l 80 de pc2 contestando con Set-Cookie)</span><pre><span class="c"># -c guarda las cookies recibidas en un fichero ("tarro de cookies")</span>
+<span class="p">pc1# </span>curl -c /tmp/lab-cookies.txt http://servidor.lab/
+<span class="p">pc1# </span>cat /tmp/lab-cookies.txt
+<span class="c"># -b las envía en la siguiente petición: mira en pc2 la cabecera "Cookie:"</span>
+<span class="p">pc1# </span>curl -b /tmp/lab-cookies.txt http://servidor.lab/perfil</pre></div>
+<div class="warn"><p>Quien copie la cookie de sesión <em>es</em> el usuario para el servidor. Por eso las cookies de sesión se marcan <code>HttpOnly</code> (JavaScript no puede leerlas) y <code>Secure</code> (solo viajan por HTTPS).</p></div>
+<h3>Una conexión, varias peticiones (keep-alive)</h3>
+<p>Abrir una conexión TCP cuesta un handshake. HTTP/1.1 reutiliza la misma conexión para varias peticiones. Vuelve a lanzar <code>python -m http.server 80 --directory /tmp/lab-http --protocol HTTP/1.1</code> en pc2:</p>
+<div class="cmd"><span class="label">pc2 y pc1</span><pre><span class="p">pc2# </span>tcpdump -i eth0 -n 'tcp[tcpflags] &amp; (tcp-syn|tcp-fin) != 0'
+<span class="p">pc1# </span>curl -v http://servidor.lab/ http://servidor.lab/index.html</pre></div>
+<p>curl dice <code>Re-using existing connection</code> y tcpdump muestra un solo SYN para las dos peticiones. En HTTP/2 y HTTP/3 se va más allá: muchas peticiones simultáneas en la misma conexión (multiplexación).</p>
+
+<!-- ============================================================ -->
+<h2 id="presentacion">5.4 Presentación: codificar no es cifrar</h2>
+<div class="cmd"><span class="label">pc1</span><pre><span class="c"># Texto → bytes: UTF-8 usa 2 bytes para la "ñ"</span>
+<span class="p">pc1# </span>echo -n "año" | xxd
+<span class="c"># Base64: convierte bytes en texto imprimible</span>
+<span class="p">pc1# </span>echo -n "ana:secreto" | base64
+<span class="p">pc1# </span>echo "YW5hOnNlY3JldG8=" | base64 -d
+<span class="c"># Compresión gzip</span>
+<span class="p">pc1# </span>echo "hola hola hola hola hola hola hola hola" | gzip | xxd</pre></div>
+<p>Ahora mira cómo viaja una contraseña con autenticación HTTP <em>Basic</em> (con el <code>nc -C -l 80</code> de pc2 escuchando):</p>
+<div class="cmd"><span class="label">pc1</span><pre><span class="p">pc1# </span>curl -u ana:secreto http://servidor.lab/privado</pre></div>
+<pre class="out">GET /privado HTTP/1.1
+Host: servidor.lab
+Authorization: Basic YW5hOnNlY3JldG8=
+User-Agent: curl/8.x</pre>
+<p>Cualquiera que capture el tráfico la decodifica con <code>base64 -d</code>. Base64 es <strong>presentación</strong> (formato), no seguridad. Para eso está TLS.</p>
+<div class="table-wrap"><table>
+<tr><th>Técnica</th><th>Propósito</th><th>¿Reversible sin clave?</th></tr>
+<tr><td>UTF-8, ASCII</td><td>Representar texto como bytes</td><td>Sí</td></tr>
+<tr><td>Base64, URL-encoding</td><td>Transportar bytes por canales de texto</td><td>Sí</td></tr>
+<tr><td>gzip, brotli</td><td>Ocupar menos</td><td>Sí</td></tr>
+<tr><td>JSON, XML, Protobuf</td><td>Estructurar datos</td><td>Sí</td></tr>
+<tr><td>Hash (SHA-256)</td><td>Huella / integridad</td><td>No (unidireccional)</td></tr>
+<tr><td>Cifrado (AES, ChaCha20)</td><td>Confidencialidad</td><td>No</td></tr>
+</table></div>
+
+<!-- ============================================================ -->
+<h2 id="tls">5.5 TLS: HTTPS con tu propio certificado</h2>
+<h3>Crear un certificado autofirmado</h3>
+<div class="cmd"><span class="label">host</span><pre><span class="p">$ </span>mkdir -p /tmp/lab-tls
+<span class="p">$ </span>cd /tmp/lab-tls
+<span class="p">$ </span>openssl req -x509 -newkey ed25519 -nodes -days 7 -keyout servidor.key -out servidor.crt -subj "/CN=servidor.lab" -addext "subjectAltName=DNS:servidor.lab"
+<span class="c"># Ver lo que contiene</span>
+<span class="p">$ </span>openssl x509 -in servidor.crt -noout -text</pre></div>
+<h3>Servidor TLS y cliente</h3>
+<div class="cmd"><span class="label">pc2</span><pre><span class="c"># -www: responde con una página de estado de la sesión TLS</span>
+<span class="p">pc2# </span>openssl s_server -accept 443 -cert /tmp/lab-tls/servidor.crt -key /tmp/lab-tls/servidor.key -www</pre></div>
+<div class="cmd"><span class="label">pc1</span><pre><span class="c"># Cliente TLS de diagnóstico: muestra certificado, versión y cifrado negociado</span>
+<span class="p">pc1# </span>openssl s_client -connect servidor.lab:443 -servername servidor.lab -CAfile /tmp/lab-tls/servidor.crt
+<span class="c"># curl sin indicarle el certificado: falla (no confía en él)</span>
+<span class="p">pc1# </span>curl https://servidor.lab/
+<span class="c"># curl confiando en nuestro certificado</span>
+<span class="p">pc1# </span>curl --cacert /tmp/lab-tls/servidor.crt https://servidor.lab/</pre></div>
+<figure class="diagram">
+<svg viewBox="0 0 760 270" role="img" aria-label="Handshake TLS 1.3">
+  <defs><marker id="ah8" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="arrow-head"/></marker></defs>
+  <rect x="90" y="8" width="140" height="30" class="box" rx="6"/><text x="160" y="28" text-anchor="middle" class="title">cliente</text>
+  <rect x="530" y="8" width="140" height="30" class="box" rx="6"/><text x="600" y="28" text-anchor="middle" class="title">servidor</text>
+  <line x1="160" y1="38" x2="160" y2="265" class="wire dash"/><line x1="600" y1="38" x2="600" y2="265" class="wire dash"/>
+  <text x="380" y="55" text-anchor="middle" class="small">(después del handshake TCP)</text>
+  <line x1="160" y1="75" x2="598" y2="88" class="wire-l5" marker-end="url(#ah8)"/><text x="380" y="73" text-anchor="middle" class="mono">ClientHello: versiones, cifrados, SNI, clave efímera</text>
+  <line x1="600" y1="115" x2="162" y2="128" class="wire-l5" marker-end="url(#ah8)"/><text x="380" y="113" text-anchor="middle" class="mono">ServerHello + clave efímera</text>
+  <rect x="170" y="140" width="420" height="22" class="f-l5" opacity="0.25"/><text x="380" y="156" text-anchor="middle" class="small">🔒 a partir de aquí todo va cifrado</text>
+  <line x1="600" y1="180" x2="162" y2="193" class="wire-l5" marker-end="url(#ah8)"/><text x="380" y="178" text-anchor="middle" class="mono">Certificado + firma + Finished</text>
+  <line x1="160" y1="220" x2="598" y2="233" class="wire-l5" marker-end="url(#ah8)"/><text x="380" y="218" text-anchor="middle" class="mono">Finished</text>
+  <text x="380" y="260" text-anchor="middle" class="mono">⇄ datos de aplicación (HTTP) cifrados</text>
+</svg>
+<figcaption>TLS 1.3 completa el acuerdo en un solo viaje de ida y vuelta.</figcaption>
+</figure>
+<h3>Qué ve un espía</h3>
+<div class="cmd"><span class="label">pc2</span><pre><span class="p">pc2# </span>tcpdump -i eth0 -n -A port 443</pre></div>
+<p>Repite el <code>curl --cacert …</code>. Busca en la salida <code>servidor.lab</code>: aparece en el ClientHello (la extensión <strong>SNI</strong> viaja en claro para que el servidor sepa qué certificado mostrar). Todo lo demás —ruta, cabeceras, cookies, contenido— es ilegible. Compáralo con el mismo <code>tcpdump -A</code> sobre el puerto 80.</p>
+<div class="table-wrap"><table>
+<tr><th>Propiedad</th><th>Cómo la consigue TLS</th></tr>
+<tr><td>Confidencialidad</td><td>Cifrado simétrico (AES-GCM, ChaCha20) con claves de sesión</td></tr>
+<tr><td>Integridad</td><td>Cifrado autenticado (AEAD): cualquier cambio se detecta</td></tr>
+<tr><td>Autenticación del servidor</td><td>Certificado firmado por una CA en la que el cliente confía</td></tr>
+<tr><td>Secreto hacia delante</td><td>Claves efímeras (ECDHE): robar la clave del servidor después no descifra lo grabado antes</td></tr>
+<tr><td>Reanudación de sesión (capa 5)</td><td>Tickets/PSK: reconectar sin repetir todo el handshake</td></tr>
+</table></div>
+<details><summary>Extra: tu propia autoridad de certificación (CA)</summary>
+<div class="cmd"><span class="label">host · /tmp/lab-tls</span><pre><span class="c"># La CA</span>
+<span class="p">$ </span>openssl req -x509 -newkey ed25519 -nodes -days 30 -keyout ca.key -out ca.crt -subj "/CN=CA del laboratorio"
+<span class="c"># Petición de firma (CSR) del servidor</span>
+<span class="p">$ </span>openssl req -newkey ed25519 -nodes -keyout web.key -out web.csr -subj "/CN=servidor.lab"
+<span class="c"># La CA firma la petición</span>
+<span class="p">$ </span>openssl x509 -req -in web.csr -CA ca.crt -CAkey ca.key -CAcreateserial -days 7 -out web.crt -extfile &lt;(echo "subjectAltName=DNS:servidor.lab")
+<span class="c"># Verificar la cadena</span>
+<span class="p">$ </span>openssl verify -CAfile ca.crt web.crt</pre></div>
+<p>Arranca <code>s_server</code> con <code>web.crt</code>/<code>web.key</code> y en el cliente usa <code>--cacert ca.crt</code>: confías en la CA y, por tanto, en todo lo que firme. Así funciona la web real (con CAs como Let's Encrypt preinstaladas en tu sistema).</p>
+</details>
+
+<!-- ============================================================ -->
+<h2 id="dns">5.6 DNS por dentro</h2>
+<p>Ponemos en pc2 un DNS con varios tipos de registro:</p>
+<div class="cmd"><span class="label">pc2</span><pre><span class="p">pc2# </span>dnsmasq --no-daemon --interface=eth0 --bind-interfaces --no-resolv --no-hosts --pid-file= --log-queries --host-record=servidor.lab,10.0.0.2 --cname=www.lab,servidor.lab --mx-host=lab,correo.lab,10 --host-record=correo.lab,10.0.0.25 --txt-record=lab,"v=spf1 mx -all" --srv-host=_ldap._tcp.lab,servidor.lab,389</pre></div>
+<div class="cmd"><span class="label">pc1</span><pre><span class="p">pc1# </span>dig @10.0.0.2 servidor.lab A
+<span class="p">pc1# </span>dig @10.0.0.2 www.lab
+<span class="p">pc1# </span>dig @10.0.0.2 lab MX
+<span class="p">pc1# </span>dig @10.0.0.2 lab TXT
+<span class="p">pc1# </span>dig @10.0.0.2 _ldap._tcp.lab SRV
+<span class="p">pc1# </span>dig @10.0.0.2 -x 10.0.0.2
+<span class="c"># Forzar TCP en lugar de UDP</span>
+<span class="p">pc1# </span>dig @10.0.0.2 servidor.lab +tcp</pre></div>
+<div class="table-wrap"><table>
+<tr><th>Registro</th><th>Contiene</th><th>Ejemplo</th></tr>
+<tr><td>A / AAAA</td><td>IPv4 / IPv6</td><td><code>servidor.lab → 10.0.0.2</code></td></tr>
+<tr><td>CNAME</td><td>Alias de otro nombre</td><td><code>www.lab → servidor.lab</code></td></tr>
+<tr><td>MX</td><td>Servidor de correo del dominio, con prioridad</td><td><code>lab → 10 correo.lab</code></td></tr>
+<tr><td>TXT</td><td>Texto libre (SPF, verificaciones)</td><td><code>"v=spf1 mx -all"</code></td></tr>
+<tr><td>SRV</td><td>Dónde está un servicio (host + puerto)</td><td><code>_ldap._tcp.lab → servidor.lab:389</code> (Active Directory los usa mucho)</td></tr>
+<tr><td>PTR</td><td>Resolución inversa</td><td><code>2.0.0.10.in-addr.arpa → servidor.lab</code></td></tr>
+<tr><td>NS / SOA</td><td>Servidores con autoridad sobre la zona / datos de la zona</td><td>—</td></tr>
+</table></div>
+<h3>Una consulta DNS fabricada con scapy</h3>
+<div class="cmd"><span class="label">scapy en pc1</span><pre><span class="p">&gt;&gt;&gt; </span>q = IP(dst="10.0.0.2") / UDP(sport=33000, dport=53) / DNS(id=0xbeef, rd=1, qd=DNSQR(qname="servidor.lab", qtype="A"))
+<span class="p">&gt;&gt;&gt; </span>q.show()
+<span class="p">&gt;&gt;&gt; </span>r = sr1(q, timeout=2)
+<span class="p">&gt;&gt;&gt; </span>r[DNS].id, r[DNS].rcode, r[DNS].an.rdata</pre></div>
+<pre class="out">(48879, 0, '10.0.0.2')</pre>
+<p>El <code>id</code> de la respuesta coincide con el de la pregunta: así el cliente empareja respuestas. <code>rcode</code> 0 = sin error, 3 = NXDOMAIN (no existe).</p>
+
+<!-- ============================================================ -->
+<h2 id="ssh">5.7 SSH: sesiones remotas y túneles</h2>
+<p>SSH reúne las tres capas: autentica, cifra y mantiene una sesión interactiva (y puede transportar otras conexiones dentro). Arranca un servidor en pc2 (si nunca has usado sshd, genera antes las claves de host con <code>sudo ssh-keygen -A</code>):</p>
+<div class="cmd"><span class="label">pc2</span><pre><span class="p">pc2# </span>/usr/bin/sshd -D -p 22 -o PidFile=none</pre></div>
+<div class="cmd"><span class="label">host → pc1 como tu usuario</span><pre><span class="p">$ </span>sudo ip netns exec pc1 sudo -u $USER ssh $USER@10.0.0.2</pre></div>
+<p>(Entras con tu propia contraseña: es el mismo sistema, solo que a través de la red del laboratorio. Ejecuta <code>ip -br addr</code> dentro: verás la red de pc2.)</p>
+<div class="table-wrap"><table>
+<tr><th>Túnel</th><th>Opción</th><th>Qué hace</th><th>Ejemplo</th></tr>
+<tr><td>Local</td><td><code>-L</code></td><td>Un puerto de tu equipo lleva a un destino visto desde el servidor</td><td><code>ssh -L 8080:127.0.0.1:80 usuario@10.0.0.2</code> → <code>curl localhost:8080</code></td></tr>
+<tr><td>Remoto</td><td><code>-R</code></td><td>Un puerto del servidor lleva a un destino visto desde ti</td><td><code>ssh -R 9000:127.0.0.1:22 usuario@10.0.0.2</code></td></tr>
+<tr><td>Dinámico (SOCKS)</td><td><code>-D</code></td><td>Proxy SOCKS: cualquier destino, salida por el servidor</td><td><code>ssh -D 1080 usuario@10.0.0.2</code> → <code>curl --socks5 localhost:1080 http://…</code></td></tr>
+<tr><td>Saltos</td><td><code>-J</code></td><td>Atravesar equipos intermedios</td><td>Ver la <a href="capa3.html#onion">red tipo onion</a></td></tr>
+</table></div>
+<p>La autenticación por claves y el control de quién puede entrar se ven en <a href="permisos.html">Permisos e identidad</a>.</p>
+
+<!-- ============================================================ -->
+<h2 id="todo">5.8 Una petición atravesando todas las capas</h2>
+<p>Con el servidor HTTP de pc2 en marcha, captura en pc1 a fichero y haz una sola petición:</p>
+<div class="cmd"><span class="label">pc1</span><pre><span class="p">pc1# </span>ip neigh flush dev eth0
+<span class="p">pc1# </span>tcpdump -i eth0 -n -e -w /tmp/lab-todo.pcap &amp;
+<span class="p">pc1# </span>curl http://servidor.lab/
+<span class="p">pc1# </span>kill %1
+<span class="p">pc1# </span>tcpdump -n -e -r /tmp/lab-todo.pcap</pre></div>
+<div class="table-wrap"><table>
+<tr><th>#</th><th>Paquetes</th><th>Capa</th><th>Qué está pasando</th></tr>
+<tr><td>1</td><td>— (lectura de <code>/etc/hosts</code>)</td><td>7</td><td>Nombre → IP. Con DNS verías aquí una consulta UDP 53</td></tr>
+<tr><td>2</td><td>ARP request / reply</td><td>2</td><td>IP → MAC del servidor (o del router)</td></tr>
+<tr><td>3</td><td>SYN, SYN-ACK, ACK</td><td>4</td><td>Abrir la conexión TCP</td></tr>
+<tr><td>4</td><td>PSH-ACK con <code>GET /</code></td><td>7</td><td>La petición HTTP</td></tr>
+<tr><td>5</td><td>ACK + respuesta <code>200 OK</code></td><td>4 / 7</td><td>Confirmación y contenido</td></tr>
+<tr><td>6</td><td>FIN, ACK…</td><td>4</td><td>Cierre</td></tr>
+</table></div>
+<p>Abre <code>/tmp/lab-todo.pcap</code> con Wireshark (<code>sudo pacman -S wireshark-qt</code>) y despliega cada paquete: verás Ethernet → IP → TCP → HTTP, exactamente la encapsulación de la <a href="index.html#modelo">portada</a>.</p>
+
+<h2 id="limpieza">Limpieza</h2>
+<div class="cmd"><span class="label">host</span><pre><span class="p">$ </span>sudo ip netns del pc1
+<span class="p">$ </span>sudo ip netns del pc2
+<span class="p">$ </span>sudo rm -r /etc/netns/pc1
+<span class="p">$ </span>rm -r /tmp/lab-tls
+<span class="p">$ </span>sudo rm -rf /tmp/lab-http /tmp/lab-cookies.txt /tmp/lab-todo.pcap</pre></div>
+
+<div class="pager"><a href="capa4.html">← Capa 4</a><a href="permisos.html">Permisos e identidad →</a></div>
+</main>
+</div>
+<footer>netns·lab · Capas 5-7</footer>
+</body>
+</html>

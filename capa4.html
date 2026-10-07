@@ -1,0 +1,322 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Capa 4 · Transporte</title>
+<meta name="description" content="Capa de transporte con ip netns: puertos, UDP, TCP, handshake manual con scapy, estados, conntrack y redes con pérdidas.">
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/app.js"></script>
+</head>
+<body>
+<header class="topbar"><div class="topbar-inner">
+  <a class="brand" href="index.html">netns<span>·</span>lab</a>
+  <nav class="topnav">
+    <a href="index.html">Inicio</a>
+    <a href="capa2.html">Capa 2</a>
+    <a href="capa3.html">Capa 3</a>
+    <a href="capa4.html" class="active">Capa 4</a>
+    <a href="capa5.html">Capas 5-7</a>
+    <a href="permisos.html">Permisos</a>
+    <a href="limpieza.html">Chuleta</a>
+  </nav>
+  <button id="theme-toggle" aria-label="Cambiar tema">◐</button>
+</div></header>
+
+<div class="layout">
+<aside class="toc"><h4>Capa 4</h4><ol></ol></aside>
+<main>
+<span class="layer-tag tag-l4">Capa 4 · Transporte</span>
+<h1>Capa 4: puertos, UDP y TCP</h1>
+<p class="lead">IP lleva paquetes de un <em>equipo</em> a otro. La capa de transporte los lleva de un <em>programa</em> a otro, usando <strong>puertos</strong>. TCP además garantiza que llega todo, en orden y sin duplicados; UDP no garantiza nada pero es rápido y simple.</p>
+
+<h2 id="lab">4.1 Laboratorio base</h2>
+<p>Dos PCs unidos directamente, como en la capa 3. Abre una terminal en cada uno con <code>sudo ip netns exec pcN bash</code>.</p>
+<div class="cmd"><span class="label">host</span><pre><span class="p">$ </span>sudo ip netns add pc1
+<span class="p">$ </span>sudo ip netns add pc2
+<span class="p">$ </span>sudo ip link add eth0 netns pc1 type veth peer name eth0 netns pc2</pre></div>
+<div class="cmd"><span class="label">pc1 / pc2</span><pre><span class="p">pc1# </span>ip link set lo up
+<span class="p">pc1# </span>ip link set eth0 up
+<span class="p">pc1# </span>ip addr add 10.0.0.1/24 dev eth0
+<span class="p">pc2# </span>ip link set lo up
+<span class="p">pc2# </span>ip link set eth0 up
+<span class="p">pc2# </span>ip addr add 10.0.0.2/24 dev eth0</pre></div>
+
+<h2 id="puertos">4.2 Puertos y sockets</h2>
+<p>Una conexión queda identificada por 5 datos: <strong>protocolo, IP origen, puerto origen, IP destino, puerto destino</strong>. Por eso un servidor web puede tener miles de clientes en el mismo puerto 80: cada uno usa un puerto origen distinto.</p>
+<div class="table-wrap"><table>
+<tr><th>Rango</th><th>Nombre</th><th>Uso</th></tr>
+<tr><td>0 – 1023</td><td>Bien conocidos</td><td>Servicios estándar; solo root (o CAP_NET_BIND_SERVICE) puede escucharlos</td></tr>
+<tr><td>1024 – 49151</td><td>Registrados</td><td>Aplicaciones (3306 MySQL, 5432 PostgreSQL, 8080…)</td></tr>
+<tr><td>32768 – 60999</td><td>Efímeros (Linux)</td><td>Puerto origen aleatorio del cliente. Ver <code>sysctl net.ipv4.ip_local_port_range</code></td></tr>
+</table></div>
+<div class="table-wrap"><table>
+<tr><th>Puerto</th><th>Proto</th><th>Servicio</th><th>Puerto</th><th>Proto</th><th>Servicio</th></tr>
+<tr><td>22</td><td>TCP</td><td>SSH</td><td>53</td><td>UDP/TCP</td><td>DNS</td></tr>
+<tr><td>25</td><td>TCP</td><td>SMTP</td><td>67/68</td><td>UDP</td><td>DHCP servidor/cliente</td></tr>
+<tr><td>80</td><td>TCP</td><td>HTTP</td><td>123</td><td>UDP</td><td>NTP</td></tr>
+<tr><td>443</td><td>TCP/UDP</td><td>HTTPS / HTTP/3 (QUIC)</td><td>389 / 636</td><td>TCP</td><td>LDAP / LDAPS</td></tr>
+<tr><td>88</td><td>TCP/UDP</td><td>Kerberos</td><td>51820</td><td>UDP</td><td>WireGuard</td></tr>
+</table></div>
+<h3>Ver quién escucha: ss</h3>
+<div class="cmd"><span class="label">pc2</span><pre><span class="c"># Abrimos un servidor TCP y uno UDP</span>
+<span class="p">pc2# </span>nc -lk 5000 &amp;
+<span class="p">pc2# </span>nc -luk 6000 &amp;
+<span class="c"># -t TCP, -u UDP, -l escuchando, -p proceso, -n numérico</span>
+<span class="p">pc2# </span>ss -tulpn</pre></div>
+<pre class="out">Netid State  Recv-Q Send-Q Local Address:Port Peer Address:Port Process
+udp   UNCONN 0      0            0.0.0.0:6000      0.0.0.0:*     users:(("nc",pid=812,fd=3))
+tcp   LISTEN 0      1            0.0.0.0:5000      0.0.0.0:*     users:(("nc",pid=811,fd=3))</pre>
+<p><code>0.0.0.0</code> significa "en todas las IPs del equipo". Si el servidor escuchara solo en <code>127.0.0.1</code>, nadie de fuera podría conectar: es un error muy común. (Los <code>&amp;</code> mandan cada programa a segundo plano; tráelos de vuelta con <code>fg</code> o termínalos con <code>kill %1</code> y <code>kill %2</code>.)</p>
+
+<h2 id="udp">4.3 UDP: enviar y olvidar</h2>
+<figure class="diagram">
+<svg viewBox="0 0 760 90" role="img" aria-label="Cabecera UDP">
+  <text x="10" y="18" class="title">Cabecera UDP (8 bytes)</text>
+  <rect x="10" y="30" width="185" height="40" class="f-l4"/><text x="102" y="55" text-anchor="middle" class="white">Puerto origen</text>
+  <rect x="195" y="30" width="185" height="40" class="f-l4" opacity="0.85"/><text x="287" y="55" text-anchor="middle" class="white">Puerto destino</text>
+  <rect x="380" y="30" width="185" height="40" class="box"/><text x="472" y="55" text-anchor="middle">Longitud</text>
+  <rect x="565" y="30" width="185" height="40" class="box"/><text x="657" y="55" text-anchor="middle">Checksum</text>
+</svg>
+</figure>
+<div class="cmd"><span class="label">pc2 · terminal A y B</span><pre><span class="p">pc2# </span>tcpdump -i eth0 -n -X udp
+<span class="p">pc2# </span>nc -lu 6001</pre></div>
+<div class="cmd"><span class="label">pc1</span><pre><span class="c"># Escribe líneas y pulsa Intro: cada línea es un datagrama</span>
+<span class="p">pc1# </span>nc -u 10.0.0.2 6001</pre></div>
+<p>No hay saludo previo ni confirmaciones: cada línea viaja en un único datagrama. Ahora envía a un puerto donde nadie escucha:</p>
+<div class="cmd"><span class="label">pc1</span><pre><span class="p">pc1# </span>scapy
+<span class="p">&gt;&gt;&gt; </span>r = sr1(IP(dst="10.0.0.2")/UDP(sport=12345, dport=7777)/b"hola?", timeout=2)
+<span class="p">&gt;&gt;&gt; </span>r.summary()
+<span class="c"># Y a uno abierto: no hay respuesta automática (UDP no confirma)</span>
+<span class="p">&gt;&gt;&gt; </span>send(IP(dst="10.0.0.2")/UDP(sport=12345, dport=6001)/b"hola desde scapy\n")</pre></div>
+<pre class="out">'IP / ICMP 10.0.0.2 &gt; 10.0.0.1 dest-unreach port-unreachable / IPerror / UDPerror'</pre>
+<p>El kernel de pc2 responde a los puertos UDP cerrados con ICMP "port unreachable". Es la base de <code>nmap -sU</code> y del <code>traceroute</code> clásico.</p>
+
+<h2 id="tcp">4.4 TCP: la cabecera y los flags</h2>
+<figure class="diagram">
+<svg viewBox="0 0 760 210" role="img" aria-label="Cabecera TCP">
+  <text x="10" y="18" class="title">Cabecera TCP (20 bytes sin opciones)</text>
+  <rect x="10" y="30" width="370" height="34" class="f-l4"/><text x="195" y="52" text-anchor="middle" class="white">Puerto origen</text>
+  <rect x="380" y="30" width="370" height="34" class="f-l4" opacity="0.85"/><text x="565" y="52" text-anchor="middle" class="white">Puerto destino</text>
+  <rect x="10" y="64" width="740" height="34" class="box"/><text x="380" y="86" text-anchor="middle">Número de secuencia (SEQ): byte que envío</text>
+  <rect x="10" y="98" width="740" height="34" class="box"/><text x="380" y="120" text-anchor="middle">Número de confirmación (ACK): siguiente byte que espero recibir</text>
+  <rect x="10" y="132" width="120" height="34" class="box2"/><text x="70" y="154" text-anchor="middle" class="small">Long. cabecera</text>
+  <rect x="130" y="132" width="250" height="34" class="f-acc"/><text x="255" y="154" text-anchor="middle" class="white">Flags: CWR ECE URG ACK PSH RST SYN FIN</text>
+  <rect x="380" y="132" width="370" height="34" class="box"/><text x="565" y="154" text-anchor="middle">Ventana (cuántos bytes puedo recibir)</text>
+  <rect x="10" y="166" width="370" height="34" class="box"/><text x="195" y="188" text-anchor="middle">Checksum</text>
+  <rect x="380" y="166" width="370" height="34" class="box"/><text x="565" y="188" text-anchor="middle">Puntero urgente</text>
+</svg>
+</figure>
+<div class="table-wrap"><table>
+<tr><th>Flag</th><th>tcpdump</th><th>scapy</th><th>Significado</th></tr>
+<tr><td>SYN</td><td><code>[S]</code></td><td><code>"S"</code></td><td>Quiero abrir conexión; este es mi número de secuencia inicial</td></tr>
+<tr><td>ACK</td><td><code>[.]</code></td><td><code>"A"</code></td><td>El campo ACK es válido (confirmo lo recibido)</td></tr>
+<tr><td>PSH</td><td><code>[P]</code></td><td><code>"P"</code></td><td>Entrega estos datos a la aplicación ya</td></tr>
+<tr><td>FIN</td><td><code>[F]</code></td><td><code>"F"</code></td><td>He terminado de enviar</td></tr>
+<tr><td>RST</td><td><code>[R]</code></td><td><code>"R"</code></td><td>Aborta la conexión / aquí no hay nadie</td></tr>
+<tr><td>URG, ECE, CWR</td><td><code>[U]</code>, <code>[E]</code>, <code>[W]</code></td><td><code>"U" "E" "C"</code></td><td>Datos urgentes y notificación de congestión</td></tr>
+</table></div>
+
+<h2 id="handshake">4.5 Ver el handshake y el cierre</h2>
+<div class="cmd"><span class="label">pc2 · terminal A y B</span><pre><span class="c"># -S muestra los números de secuencia absolutos</span>
+<span class="p">pc2# </span>tcpdump -i eth0 -n -S tcp port 5001
+<span class="p">pc2# </span>nc -l 5001</pre></div>
+<div class="cmd"><span class="label">pc1</span><pre><span class="p">pc1# </span>nc 10.0.0.2 5001
+<span class="c"># escribe "hola" + Intro y luego Ctrl+D para cerrar</span></pre></div>
+<pre class="out">10.0.0.1.43122 &gt; 10.0.0.2.5001: Flags [S],  seq 2735512001, win 64240, options [mss 1460,sackOK,TS ...,wscale 7], length 0
+10.0.0.2.5001 &gt; 10.0.0.1.43122: Flags [S.], seq 918273001, ack 2735512002, win 65160, options [...], length 0
+10.0.0.1.43122 &gt; 10.0.0.2.5001: Flags [.],  ack 918273002, win 502, length 0
+10.0.0.1.43122 &gt; 10.0.0.2.5001: Flags [P.], seq 2735512002:2735512007, ack 918273002, length 5
+10.0.0.2.5001 &gt; 10.0.0.1.43122: Flags [.],  ack 2735512007, length 0
+10.0.0.1.43122 &gt; 10.0.0.2.5001: Flags [F.], seq 2735512007, ack 918273002, length 0
+10.0.0.2.5001 &gt; 10.0.0.1.43122: Flags [F.], seq 918273002, ack 2735512008, length 0
+10.0.0.1.43122 &gt; 10.0.0.2.5001: Flags [.],  ack 918273003, length 0</pre>
+<figure class="diagram">
+<svg viewBox="0 0 760 400" role="img" aria-label="Diagrama de secuencia de una conexión TCP">
+  <defs><marker id="ah6" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="arrow-head"/></marker></defs>
+  <rect x="90" y="8" width="140" height="30" class="box" rx="6"/><text x="160" y="28" text-anchor="middle" class="title">cliente pc1</text>
+  <rect x="530" y="8" width="140" height="30" class="box" rx="6"/><text x="600" y="28" text-anchor="middle" class="title">servidor pc2</text>
+  <line x1="160" y1="38" x2="160" y2="395" class="wire dash"/><line x1="600" y1="38" x2="600" y2="395" class="wire dash"/>
+  <text x="10" y="60" class="small">SYN_SENT</text><text x="620" y="60" class="small">LISTEN</text>
+  <line x1="160" y1="65" x2="598" y2="80" class="wire-l4" marker-end="url(#ah6)"/><text x="380" y="63" text-anchor="middle" class="mono">SYN seq=x</text>
+  <line x1="600" y1="100" x2="162" y2="115" class="wire-l4" marker-end="url(#ah6)"/><text x="380" y="98" text-anchor="middle" class="mono">SYN-ACK seq=y ack=x+1</text>
+  <text x="620" y="105" class="small">SYN_RECV</text>
+  <line x1="160" y1="135" x2="598" y2="150" class="wire-l4" marker-end="url(#ah6)"/><text x="380" y="133" text-anchor="middle" class="mono">ACK seq=x+1 ack=y+1</text>
+  <text x="10" y="150" class="small">ESTABLISHED</text><text x="620" y="160" class="small">ESTABLISHED</text>
+  <line x1="160" y1="190" x2="598" y2="205" class="wire-l3" marker-end="url(#ah6)"/><text x="380" y="188" text-anchor="middle" class="mono">PSH-ACK seq=x+1 "hola\n" (5 bytes)</text>
+  <line x1="600" y1="225" x2="162" y2="240" class="wire-l3" marker-end="url(#ah6)"/><text x="380" y="223" text-anchor="middle" class="mono">ACK ack=x+6</text>
+  <line x1="160" y1="275" x2="598" y2="290" class="wire-l5" marker-end="url(#ah6)"/><text x="380" y="273" text-anchor="middle" class="mono">FIN-ACK seq=x+6</text>
+  <text x="10" y="285" class="small">FIN_WAIT</text><text x="620" y="295" class="small">CLOSE_WAIT</text>
+  <line x1="600" y1="310" x2="162" y2="325" class="wire-l5" marker-end="url(#ah6)"/><text x="380" y="308" text-anchor="middle" class="mono">FIN-ACK ack=x+7</text>
+  <text x="620" y="330" class="small">LAST_ACK</text>
+  <line x1="160" y1="350" x2="598" y2="365" class="wire-l5" marker-end="url(#ah6)"/><text x="380" y="348" text-anchor="middle" class="mono">ACK ack=y+2</text>
+  <text x="10" y="375" class="small">TIME_WAIT</text><text x="620" y="380" class="small">CLOSED</text>
+</svg>
+<figcaption>Apertura en 3 pasos, datos con su confirmación y cierre. SYN y FIN "consumen" un número de secuencia aunque no lleven datos.</figcaption>
+</figure>
+<div class="ok"><p><strong>La regla del ACK:</strong> ACK = SEQ del otro + bytes recibidos. Si pc1 envía 5 bytes empezando en <code>x+1</code>, pc2 responde <code>ack x+6</code>: "lo tengo todo hasta x+5, espero x+6".</p></div>
+<h3>RST: llamar a una puerta cerrada</h3>
+<div class="cmd"><span class="label">pc1</span><pre><span class="p">pc1# </span>nc -v 10.0.0.2 5999</pre></div>
+<pre class="out">10.0.0.1.50020 &gt; 10.0.0.2.5999: Flags [S], seq 1111, ...
+10.0.0.2.5999 &gt; 10.0.0.1.50020: Flags [R.], seq 0, ack 1112, ...</pre>
+
+<h2 id="manual">4.6 Un handshake TCP hecho a mano (SYN, ACK y datos)</h2>
+<p>Ahora el cliente será scapy: escribiremos cada segmento. El servidor será un <code>nc</code> normal en pc2.</p>
+<div class="cmd"><span class="label">pc2 · terminal A y B</span><pre><span class="p">pc2# </span>tcpdump -i eth0 -n -S tcp port 5002
+<span class="p">pc2# </span>nc -l 5002</pre></div>
+<h3>Primer intento: el kernel nos sabotea</h3>
+<div class="cmd"><span class="label">scapy en pc1</span><pre><span class="p">&gt;&gt;&gt; </span>ip = IP(dst="10.0.0.2")
+<span class="p">&gt;&gt;&gt; </span>syn = TCP(sport=40000, dport=5002, flags="S", seq=1000)
+<span class="p">&gt;&gt;&gt; </span>synack = sr1(ip/syn, timeout=2)
+<span class="p">&gt;&gt;&gt; </span>synack.summary()</pre></div>
+<p>Recibimos el SYN-ACK… pero en tcpdump aparece un <code>[R]</code> que sale de pc1. ¿Por qué? Scapy envía por su cuenta: el <strong>kernel de pc1</strong> no tiene ningún socket abierto en el puerto 40000, así que cuando ve llegar un SYN-ACK inesperado responde RST y mata la conexión.</p>
+<h3>Solución: que el kernel de pc1 no envíe RST</h3>
+<div class="cmd"><span class="label">pc1 (fuera de scapy, en otra terminal)</span><pre><span class="p">pc1# </span>iptables -A OUTPUT -p tcp --tcp-flags RST RST -d 10.0.0.2 -j DROP</pre></div>
+<p>Reinicia el servidor <code>nc -l 5002</code> en pc2 (el RST anterior lo cerró) y repite paso a paso:</p>
+<div class="cmd"><span class="label">scapy en pc1</span><pre><span class="c"># 1) SYN: "quiero hablar, mi secuencia empieza en 1000"</span>
+<span class="p">&gt;&gt;&gt; </span>synack = sr1(ip/TCP(sport=40001, dport=5002, flags="S", seq=1000), timeout=2)
+<span class="p">&gt;&gt;&gt; </span>synack[TCP].flags, synack[TCP].seq, synack[TCP].ack
+<span class="c"># 2) ACK: confirmo su SYN (su seq + 1). Mi seq ahora es 1001</span>
+<span class="p">&gt;&gt;&gt; </span>srv_seq = synack[TCP].seq + 1
+<span class="p">&gt;&gt;&gt; </span>send(ip/TCP(sport=40001, dport=5002, flags="A", seq=1001, ack=srv_seq))</pre></div>
+<pre class="out">(&lt;Flag 18 (SA)&gt;, 3141592653, 1001)</pre>
+<p>La conexión ya está establecida. Compruébalo en pc2: <code>ss -tn</code> muestra <code>ESTAB 10.0.0.2:5002 10.0.0.1:40001</code>.</p>
+<div class="cmd"><span class="label">scapy en pc1</span><pre><span class="c"># 3) Datos: 17 bytes con PSH+ACK. El nc de pc2 los imprime</span>
+<span class="p">&gt;&gt;&gt; </span>datos = b"hola desde scapy\n"
+<span class="p">&gt;&gt;&gt; </span>r = sr1(ip/TCP(sport=40001, dport=5002, flags="PA", seq=1001, ack=srv_seq)/datos, timeout=2)
+<span class="c"># pc2 confirma: ack = 1001 + 17 = 1018</span>
+<span class="p">&gt;&gt;&gt; </span>r[TCP].flags, r[TCP].ack</pre></div>
+<pre class="out">(&lt;Flag 16 (A)&gt;, 1018)</pre>
+<h3>Recibir datos del servidor y confirmarlos</h3>
+<div class="cmd"><span class="label">scapy en pc1 y nc en pc2</span><pre><span class="c"># pc1 se pone a escuchar un segmento del servidor…</span>
+<span class="p">&gt;&gt;&gt; </span>p = sniff(iface="eth0", filter="tcp and src port 5002", count=1)[0]
+<span class="c"># …y en la terminal del nc de pc2 escribes "hola scapy" + Intro</span>
+<span class="p">&gt;&gt;&gt; </span>p[TCP].seq, p[Raw].load
+<span class="c"># Confirmamos: ack = su seq + longitud de sus datos</span>
+<span class="p">&gt;&gt;&gt; </span>srv_seq = p[TCP].seq + len(p[Raw].load)
+<span class="p">&gt;&gt;&gt; </span>send(ip/TCP(sport=40001, dport=5002, flags="A", seq=1018, ack=srv_seq))</pre></div>
+<div class="note"><p>Si tardas en confirmar, verás en tcpdump que pc2 <strong>retransmite</strong> el mismo segmento varias veces: TCP no da nada por entregado hasta recibir el ACK.</p></div>
+<h3>Cerrar la conexión</h3>
+<div class="cmd"><span class="label">scapy en pc1</span><pre><span class="c"># FIN: he terminado (consume 1 número de secuencia)</span>
+<span class="p">&gt;&gt;&gt; </span>r = sr1(ip/TCP(sport=40001, dport=5002, flags="FA", seq=1018, ack=srv_seq), timeout=2)
+<span class="p">&gt;&gt;&gt; </span>r[TCP].flags</pre></div>
+<p>pc2 confirma tu FIN y, cuando su <code>nc</code> cierre (o pulses Ctrl+D en él), enviará su propio FIN. Respóndelo con <code>send(ip/TCP(sport=40001, dport=5002, flags="A", seq=1019, ack=SU_SEQ+1))</code>.</p>
+<h3>Abortar con RST</h3>
+<p>En lugar de FIN, prueba en una conexión nueva a enviar <code>flags="R"</code> con el <code>seq</code> correcto: el servidor la cierra inmediatamente. Con un <code>seq</code> fuera de la ventana el kernel lo ignora: es una protección contra inyecciones de RST.</p>
+<div class="cmd"><span class="label">pc1 · deshacer</span><pre><span class="p">pc1# </span>iptables -D OUTPUT -p tcp --tcp-flags RST RST -d 10.0.0.2 -j DROP</pre></div>
+<details><summary>Reto: los dos extremos hechos a mano</summary>
+<p>Haz lo mismo en pc2 (regla de RST en su OUTPUT hacia 10.0.0.1, sin <code>nc</code>), con scapy en ambos lados: pc2 hace <code>sniff(filter="tcp port 5003", count=1)</code> para recibir el SYN, responde con <code>flags="SA"</code>, <code>seq</code> propio y <code>ack=syn.seq+1</code>, y así sucesivamente, igual que hiciste con el ping manual en <a href="capa2.html#ping-manual">la capa 2</a>.</p>
+</details>
+
+<h2 id="estados">4.7 Estados de conexión: ss y conntrack</h2>
+<div class="table-wrap"><table>
+<tr><th>Estado</th><th>Dónde</th><th>Significado</th></tr>
+<tr><td><code>LISTEN</code></td><td>Servidor</td><td>Esperando conexiones</td></tr>
+<tr><td><code>SYN-SENT</code></td><td>Cliente</td><td>Envió SYN, espera SYN-ACK</td></tr>
+<tr><td><code>SYN-RECV</code></td><td>Servidor</td><td>Recibió SYN, envió SYN-ACK, espera ACK</td></tr>
+<tr><td><code>ESTAB</code></td><td>Ambos</td><td>Conexión abierta</td></tr>
+<tr><td><code>FIN-WAIT-1/2</code></td><td>Quien cierra</td><td>Envió FIN, espera ACK / FIN del otro</td></tr>
+<tr><td><code>CLOSE-WAIT</code></td><td>Quien recibe el FIN</td><td>El otro cerró; la aplicación aún no</td></tr>
+<tr><td><code>LAST-ACK</code></td><td>Quien cerró segundo</td><td>Espera el último ACK</td></tr>
+<tr><td><code>TIME-WAIT</code></td><td>Quien cerró primero</td><td>Espera ~60 s por si llegan paquetes rezagados</td></tr>
+</table></div>
+<div class="cmd"><span class="label">pc1 / pc2</span><pre><span class="c"># Todas las conexiones TCP con proceso</span>
+<span class="p">pc2# </span>ss -tanp
+<span class="c"># Solo las de un estado</span>
+<span class="p">pc1# </span>ss -tn state time-wait
+<span class="c"># Información interna de TCP: RTT, ventana de congestión (cwnd), retransmisiones</span>
+<span class="p">pc1# </span>ss -tni
+<span class="c"># Resumen</span>
+<span class="p">pc1# </span>ss -s</pre></div>
+<p>Los cortafuegos con estado (como el de la capa 3) no miran los estados TCP de los extremos, sino su propia tabla <strong>conntrack</strong>:</p>
+<div class="cmd"><span class="label">pc2</span><pre><span class="c"># Una regla cualquiera que use conntrack activa el seguimiento en el namespace</span>
+<span class="p">pc2# </span>iptables -A INPUT -m conntrack --ctstate INVALID -j DROP
+<span class="p">pc2# </span>conntrack -L
+<span class="c"># Ver eventos en directo: NEW, UPDATE, DESTROY</span>
+<span class="p">pc2# </span>conntrack -E</pre></div>
+<div class="table-wrap"><table>
+<tr><th>Estado conntrack</th><th>Significado</th></tr>
+<tr><td><code>NEW</code></td><td>Primer paquete de una conexión (un SYN, el primer datagrama UDP)</td></tr>
+<tr><td><code>ESTABLISHED</code></td><td>Ya se ha visto tráfico en los dos sentidos</td></tr>
+<tr><td><code>RELATED</code></td><td>Nueva conexión ligada a otra (ICMP de error, FTP de datos)</td></tr>
+<tr><td><code>INVALID</code></td><td>No encaja con nada (p. ej. un ACK sin conexión previa)</td></tr>
+</table></div>
+
+<h2 id="netem">4.8 Redes malas: retardo, pérdidas y ancho de banda</h2>
+<p><code>tc</code> con <code>netem</code> simula enlaces reales. Es la mejor forma de ver cómo TCP reacciona: retransmite, reduce su ritmo y reordena.</p>
+<div class="cmd"><span class="label">pc1</span><pre><span class="c"># 100 ms de retardo en todo lo que sale de pc1</span>
+<span class="p">pc1# </span>tc qdisc add dev eth0 root netem delay 100ms
+<span class="p">pc1# </span>ping -c 3 10.0.0.2
+<span class="c"># Retardo variable (jitter) y 10% de pérdidas</span>
+<span class="p">pc1# </span>tc qdisc change dev eth0 root netem delay 100ms 20ms loss 10%
+<span class="p">pc1# </span>ping -c 20 10.0.0.2
+<span class="c"># También: duplicar, corromper, reordenar</span>
+<span class="p">pc1# </span>tc qdisc change dev eth0 root netem delay 50ms loss 5% duplicate 1% corrupt 1% reorder 10%
+<span class="p">pc1# </span>tc qdisc show dev eth0</pre></div>
+<h3>Ver a TCP sufrir</h3>
+<div class="cmd"><span class="label">pc2 y pc1</span><pre><span class="c"># Un fichero de 5 MB para enviar</span>
+<span class="p">pc1# </span>head -c 5M /dev/urandom &gt; /tmp/lab-5M.bin
+<span class="c"># Servidor que recibe y descarta</span>
+<span class="p">pc2# </span>nc -l 5004 &gt; /dev/null
+<span class="c"># Mira las retransmisiones mientras transfiere (otra terminal de pc2)</span>
+<span class="p">pc2# </span>tcpdump -i eth0 -n tcp port 5004
+<span class="c"># Enviar y medir el tiempo</span>
+<span class="p">pc1# </span>time nc -N 10.0.0.2 5004 &lt; /tmp/lab-5M.bin
+<span class="c"># Durante la transferencia, en otra terminal de pc1</span>
+<span class="p">pc1# </span>ss -tni dst 10.0.0.2
+<span class="c"># Contadores de retransmisiones del namespace</span>
+<span class="p">pc1# </span>nstat -az TcpRetransSegs</pre></div>
+<p>Repite la transferencia sin pérdidas, con 1%, con 5% y con 10%: el tiempo no crece de forma lineal. Cada pérdida hace que TCP reduzca su ventana de congestión (<code>cwnd</code> en <code>ss -tni</code>).</p>
+<h3>Limitar el ancho de banda</h3>
+<div class="cmd"><span class="label">pc1</span><pre><span class="p">pc1# </span>tc qdisc del dev eth0 root
+<span class="c"># 1 Mbit/s con un token bucket</span>
+<span class="p">pc1# </span>tc qdisc add dev eth0 root tbf rate 1mbit burst 32kbit latency 400ms
+<span class="p">pc1# </span>time nc -N 10.0.0.2 5004 &lt; /tmp/lab-5M.bin
+<span class="c"># Quitar cualquier limitación</span>
+<span class="p">pc1# </span>tc qdisc del dev eth0 root</pre></div>
+<div class="table-wrap"><table>
+<tr><th>Mecanismo TCP</th><th>Para qué</th><th>Dónde verlo</th></tr>
+<tr><td>Números de secuencia + ACK</td><td>Saber qué ha llegado</td><td><code>tcpdump -S</code></td></tr>
+<tr><td>Retransmisión (RTO, fast retransmit)</td><td>Recuperar pérdidas</td><td><code>ss -tni</code> (retrans), <code>nstat</code></td></tr>
+<tr><td>Ventana de recepción</td><td>No saturar al receptor (control de flujo)</td><td><code>win</code> en tcpdump</td></tr>
+<tr><td>Ventana de congestión</td><td>No saturar la red (control de congestión: cubic, bbr…)</td><td><code>cwnd</code> en <code>ss -tni</code></td></tr>
+<tr><td>MSS</td><td>Tamaño máximo de segmento (MTU − 40)</td><td>opciones del SYN</td></tr>
+<tr><td>SACK</td><td>Confirmar trozos sueltos</td><td><code>sack</code> en tcpdump</td></tr>
+</table></div>
+<div class="cmd"><span class="label">pc1</span><pre><span class="c"># Algoritmo de congestión en uso y disponibles</span>
+<span class="p">pc1# </span>sysctl net.ipv4.tcp_congestion_control
+<span class="p">pc1# </span>sysctl net.ipv4.tcp_available_congestion_control</pre></div>
+
+<h2 id="tcp-vs-udp">4.9 TCP frente a UDP</h2>
+<div class="table-wrap"><table>
+<tr><th></th><th>TCP</th><th>UDP</th></tr>
+<tr><td>Conexión</td><td>Sí (handshake)</td><td>No</td></tr>
+<tr><td>Fiabilidad</td><td>Retransmite lo perdido</td><td>Lo perdido se pierde</td></tr>
+<tr><td>Orden</td><td>Garantizado</td><td>No</td></tr>
+<tr><td>Control de congestión</td><td>Sí</td><td>No (lo hace la aplicación si quiere)</td></tr>
+<tr><td>Cabecera</td><td>20-60 bytes</td><td>8 bytes</td></tr>
+<tr><td>Unidad</td><td>Flujo de bytes</td><td>Mensajes independientes</td></tr>
+<tr><td>Ejemplos</td><td>HTTP/1-2, SSH, correo, bases de datos</td><td>DNS, DHCP, VoIP, juegos, WireGuard, QUIC (HTTP/3)</td></tr>
+</table></div>
+
+<h2 id="protecciones">4.10 Protecciones de capa 4</h2>
+<div class="cmd"><span class="label">pc2 (servidor)</span><pre><span class="c"># SYN cookies: el servidor no reserva memoria hasta que el cliente completa el handshake</span>
+<span class="p">pc2# </span>sysctl net.ipv4.tcp_syncookies
+<span class="c"># Tamaño de la cola de conexiones a medio abrir</span>
+<span class="p">pc2# </span>sysctl net.ipv4.tcp_max_syn_backlog
+<span class="c"># Limitar conexiones nuevas por segundo a un servicio</span>
+<span class="p">pc2# </span>iptables -A INPUT -p tcp --dport 80 --syn -m limit --limit 20/s --limit-burst 40 -j ACCEPT
+<span class="p">pc2# </span>iptables -A INPUT -p tcp --dport 80 --syn -j DROP</pre></div>
+<p>Observa con <code>ss -tn state syn-recv</code> las conexiones a medio abrir: en tu prueba de 4.6, si mandas solo el SYN y nunca el ACK, pc2 deja una entrada en ese estado hasta que se agotan sus reintentos de SYN-ACK.</p>
+
+<h2 id="limpieza">Limpieza</h2>
+<div class="cmd"><span class="label">host</span><pre><span class="p">$ </span>sudo ip netns del pc1
+<span class="p">$ </span>sudo ip netns del pc2
+<span class="p">$ </span>sudo rm /tmp/lab-5M.bin</pre></div>
+
+<div class="pager"><a href="capa3.html">← Capa 3</a><a href="capa5.html">Capas 5-7 →</a></div>
+</main>
+</div>
+<footer>netns·lab · Capa 4</footer>
+</body>
+</html>

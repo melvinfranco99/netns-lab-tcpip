@@ -1,0 +1,460 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Permisos e identidad</title>
+<meta name="description" content="Modo administrador, sudo, capabilities, firewall por usuario, SSH con claves y directorio LDAP / Active Directory en un laboratorio con ip netns.">
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/app.js"></script>
+</head>
+<body>
+<header class="topbar"><div class="topbar-inner">
+  <a class="brand" href="index.html">netns<span>·</span>lab</a>
+  <nav class="topnav">
+    <a href="index.html">Inicio</a>
+    <a href="capa2.html">Capa 2</a>
+    <a href="capa3.html">Capa 3</a>
+    <a href="capa4.html">Capa 4</a>
+    <a href="capa5.html">Capas 5-7</a>
+    <a href="permisos.html" class="active">Permisos</a>
+    <a href="limpieza.html">Chuleta</a>
+  </nav>
+  <button id="theme-toggle" aria-label="Cambiar tema">◐</button>
+</div></header>
+
+<div class="layout">
+<aside class="toc"><h4>Permisos</h4><ol></ol></aside>
+<main>
+<span class="layer-tag tag-gen">Extra · Identidad y control de acceso</span>
+<h1>Permisos: quién puede hacer qué en la red</h1>
+<p class="lead">Una red no es solo cables y protocolos: también hay que decidir <strong>quién</strong> puede administrar un router, entrar en un servidor o usar un servicio. Aquí vemos los mecanismos, de lo más local (sudo en un equipo) a lo más centralizado (un directorio tipo Active Directory).</p>
+
+<figure class="diagram">
+<svg viewBox="0 0 760 200" role="img" aria-label="Niveles de control de acceso">
+  <rect x="10" y="20" width="170" height="160" class="box" rx="10"/><text x="95" y="45" text-anchor="middle" class="title">En el equipo</text><text x="95" y="75" text-anchor="middle" class="small">root / usuarios</text><text x="95" y="95" text-anchor="middle" class="small">sudo y sudoers</text><text x="95" y="115" text-anchor="middle" class="small">capabilities</text><text x="95" y="135" text-anchor="middle" class="small">permisos de ficheros</text>
+  <rect x="200" y="20" width="170" height="160" class="box" rx="10"/><text x="285" y="45" text-anchor="middle" class="title">En la red</text><text x="285" y="75" text-anchor="middle" class="small">cortafuegos por IP</text><text x="285" y="95" text-anchor="middle" class="small">cortafuegos por usuario</text><text x="285" y="115" text-anchor="middle" class="small">VLAN / segmentación</text>
+  <rect x="390" y="20" width="170" height="160" class="box" rx="10"/><text x="475" y="45" text-anchor="middle" class="title">En el servicio</text><text x="475" y="75" text-anchor="middle" class="small">SSH con claves</text><text x="475" y="95" text-anchor="middle" class="small">AllowGroups</text><text x="475" y="115" text-anchor="middle" class="small">HTTP auth, tokens</text>
+  <rect x="580" y="20" width="170" height="160" class="box2" rx="10"/><text x="665" y="45" text-anchor="middle" class="title">Centralizado</text><text x="665" y="75" text-anchor="middle" class="small">directorio LDAP</text><text x="665" y="95" text-anchor="middle" class="small">Kerberos</text><text x="665" y="115" text-anchor="middle" class="small">Active Directory</text><text x="665" y="135" text-anchor="middle" class="small">grupos y políticas</text>
+</svg>
+<figcaption>Del control local al centralizado.</figcaption>
+</figure>
+
+<div class="warn"><p>Esta página <strong>crea un usuario real</strong> (<code>alumno</code>) y un fichero de sudoers en tu Arch. Todo se deshace en la <a href="#limpieza">limpieza</a> final.</p></div>
+
+<!-- ============================================================ -->
+<h2 id="root">P.1 Modo administrador: root y privilegios de red</h2>
+<p>En Linux, <strong>root</strong> (UID 0) puede hacerlo todo. Por eso <code>ip netns add</code>, <code>ip link</code>, <code>iptables</code> o <code>tcpdump</code> necesitan <code>sudo</code>. En realidad el kernel no pregunta "¿eres root?", sino "¿tienes la <em>capability</em> necesaria?":</p>
+<div class="table-wrap"><table>
+<tr><th>Capability</th><th>Permite</th><th>Ejemplos</th></tr>
+<tr><td><code>CAP_NET_ADMIN</code></td><td>Configurar la red</td><td><code>ip addr add</code>, <code>ip route</code>, <code>iptables</code>, <code>tc</code></td></tr>
+<tr><td><code>CAP_NET_RAW</code></td><td>Sockets crudos: fabricar o capturar paquetes</td><td><code>tcpdump</code>, scapy, <code>arping</code>, <code>nmap -sS</code></td></tr>
+<tr><td><code>CAP_NET_BIND_SERVICE</code></td><td>Escuchar en puertos &lt; 1024</td><td>Servidor web en el 80</td></tr>
+<tr><td><code>CAP_SYS_ADMIN</code></td><td>Muchas cosas, entre ellas cambiar de namespace</td><td><code>ip netns exec</code></td></tr>
+</table></div>
+<div class="cmd"><span class="label">host</span><pre><span class="c"># Quién soy y a qué grupos pertenezco</span>
+<span class="p">$ </span>id
+<span class="c"># Qué me deja hacer sudo</span>
+<span class="p">$ </span>sudo -l
+<span class="c"># Las capabilities de mi shell actual (normal: ninguna) y de una shell root</span>
+<span class="p">$ </span>grep Cap /proc/self/status
+<span class="p">$ </span>sudo grep Cap /proc/self/status</pre></div>
+
+<h3>Preparación: un usuario de prácticas y un laboratorio</h3>
+<div class="cmd"><span class="label">host</span><pre><span class="p">$ </span>sudo useradd -m -s /bin/bash alumno
+<span class="p">$ </span>sudo passwd alumno
+<span class="p">$ </span>sudo groupadd redes
+<span class="p">$ </span>sudo usermod -aG redes alumno
+<span class="p">$ </span>id alumno</pre></div>
+<div class="cmd"><span class="label">host · laboratorio pc1 ⇄ pc2</span><pre><span class="p">$ </span>sudo ip netns add pc1
+<span class="p">$ </span>sudo ip netns add pc2
+<span class="p">$ </span>sudo ip link add eth0 netns pc1 type veth peer name eth0 netns pc2
+<span class="p">$ </span>sudo ip netns exec pc1 ip link set lo up
+<span class="p">$ </span>sudo ip netns exec pc1 ip link set eth0 up
+<span class="p">$ </span>sudo ip netns exec pc1 ip addr add 10.0.0.1/24 dev eth0
+<span class="p">$ </span>sudo ip netns exec pc2 ip link set lo up
+<span class="p">$ </span>sudo ip netns exec pc2 ip link set eth0 up
+<span class="p">$ </span>sudo ip netns exec pc2 ip addr add 10.0.0.2/24 dev eth0</pre></div>
+
+<!-- ============================================================ -->
+<h2 id="sudo">P.2 sudo: delegar solo lo necesario</h2>
+<p>Queremos que <code>alumno</code> pueda <em>consultar</em> la red de pc1 y hacer pings desde allí, pero no cambiar nada ni abrir una shell de root. Es el <strong>principio de mínimo privilegio</strong>.</p>
+<p>Las reglas de sudo se editan <strong>siempre con visudo</strong>, que comprueba la sintaxis antes de guardar (un error en sudoers te puede dejar sin sudo):</p>
+<div class="cmd"><span class="label">host</span><pre><span class="p">$ </span>sudo EDITOR=nano visudo -f /etc/sudoers.d/lab-redes</pre></div>
+<p>Escribe esto en el fichero:</p>
+<div class="cmd"><span class="label">/etc/sudoers.d/lab-redes</span><pre># Comandos de solo lectura y diagnóstico en pc1
+Cmnd_Alias RED_CONSULTA = /usr/bin/ip netns list, \
+                          /usr/bin/ip netns exec pc1 /usr/bin/ip addr show, \
+                          /usr/bin/ip netns exec pc1 /usr/bin/ip route show, \
+                          /usr/bin/ip netns exec pc1 /usr/bin/ip neigh show
+Cmnd_Alias RED_PING     = /usr/bin/ip netns exec pc1 /usr/bin/ping -c [1-9] 10.0.0.*
+
+# El grupo "redes" puede ejecutarlos como root, sin contraseña
+%redes ALL=(root) NOPASSWD: RED_CONSULTA, RED_PING</pre></div>
+<div class="cmd"><span class="label">host · probar como alumno</span><pre><span class="p">$ </span>sudo -iu alumno
+<span class="p">alumno$ </span>sudo -l
+<span class="p">alumno$ </span>sudo ip netns exec pc1 ip addr show
+<span class="p">alumno$ </span>sudo ip netns exec pc1 ping -c 2 10.0.0.2
+<span class="c"># Todo esto debe ser denegado:</span>
+<span class="p">alumno$ </span>sudo ip netns exec pc1 ip addr add 10.0.0.9/24 dev eth0
+<span class="p">alumno$ </span>sudo ip netns exec pc1 bash
+<span class="p">alumno$ </span>sudo ip netns exec pc1 ping 10.0.0.2
+<span class="p">alumno$ </span>exit</pre></div>
+<div class="cmd"><span class="label">host · auditoría</span><pre><span class="c"># sudo registra cada uso, permitido o no</span>
+<span class="p">$ </span>sudo journalctl _COMM=sudo -n 20</pre></div>
+<div class="table-wrap"><table>
+<tr><th>Sintaxis sudoers</th><th>Significado</th></tr>
+<tr><td><code>usuario HOST=(COMO_QUIEN) COMANDOS</code></td><td>Forma general de una regla</td></tr>
+<tr><td><code>%grupo</code></td><td>Regla para todos los miembros de un grupo</td></tr>
+<tr><td><code>NOPASSWD:</code></td><td>No pedir contraseña</td></tr>
+<tr><td><code>Cmnd_Alias</code>, <code>User_Alias</code></td><td>Agrupar comandos o usuarios</td></tr>
+<tr><td>Ruta completa + argumentos</td><td>Solo ese comando con esos argumentos (comodines <code>*</code>, <code>[1-9]</code>)</td></tr>
+<tr><td>Ruta sin argumentos</td><td>Ese comando con <em>cualquier</em> argumento</td></tr>
+<tr><td><code>""</code> como argumentos</td><td>El comando sin ningún argumento</td></tr>
+</table></div>
+<div class="warn">
+<p><strong>Trampas típicas que equivalen a dar root completo:</strong></p>
+<ul>
+<li><code>/usr/bin/ip netns exec pc1 *</code>: permite <code>ip netns exec pc1 bash</code>.</li>
+<li><code>/usr/bin/tcpdump</code> con cualquier argumento: su opción <code>-z</code> ejecuta un programa al rotar ficheros.</li>
+<li><code>/usr/bin/nmap</code>: sus scripts NSE (<code>--script</code>) son código Lua arbitrario.</li>
+<li>Editores, <code>less</code>, <code>find</code>, <code>python</code>… pueden abrir una shell.</li>
+<li>Un <code>*</code> en los argumentos también casa con espacios, es decir, con argumentos extra: úsalo con cuidado.</li>
+</ul>
+<p>Por eso en la regla anterior fijamos exactamente los argumentos.</p>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="caps">P.3 Capabilities: privilegios sin ser root</h2>
+<p>En lugar de dar root, se puede dar a un programa <em>solo</em> la capability que necesita. Hacemos una copia de tcpdump que cualquier usuario puede usar para capturar:</p>
+<div class="cmd"><span class="label">host</span><pre><span class="c"># La copia va en tu home: /tmp suele montarse con nosuid, y ahí las capabilities se ignoran</span>
+<span class="p">$ </span>cp /usr/bin/tcpdump ~/lab-tcpdump
+<span class="c"># Sin capability: falla</span>
+<span class="p">$ </span>~/lab-tcpdump -i lo -c 2
+<span class="c"># Le damos permiso para capturar (raw) y poner la interfaz en promiscuo (admin)</span>
+<span class="p">$ </span>sudo setcap cap_net_raw,cap_net_admin=eip ~/lab-tcpdump
+<span class="p">$ </span>getcap ~/lab-tcpdump
+<span class="c"># Ahora funciona como usuario normal (en otra terminal: ping -c 2 127.0.0.1)</span>
+<span class="p">$ </span>~/lab-tcpdump -i lo -c 2</pre></div>
+<div class="cmd"><span class="label">host · ver qué binarios del sistema tienen capabilities</span><pre><span class="p">$ </span>getcap -r /usr/bin 2&gt;/dev/null</pre></div>
+
+<h3>Puertos privilegiados por namespace</h3>
+<p>El límite de "solo root escucha en puertos &lt; 1024" es un ajuste de cada namespace de red:</p>
+<div class="cmd"><span class="label">host</span><pre><span class="c"># alumno intenta abrir un servidor en el puerto 80 de pc2: PermissionError</span>
+<span class="p">$ </span>sudo ip netns exec pc2 sudo -u alumno python -m http.server 80 --directory /tmp
+<span class="p">$ </span>sudo ip netns exec pc2 sysctl net.ipv4.ip_unprivileged_port_start
+<span class="c"># En pc2 (y solo en pc2), los puertos desde el 80 son para todos</span>
+<span class="p">$ </span>sudo ip netns exec pc2 sysctl -w net.ipv4.ip_unprivileged_port_start=80
+<span class="p">$ </span>sudo ip netns exec pc2 sudo -u alumno python -m http.server 80 --directory /tmp</pre></div>
+<p>Comprueba con <code>sudo ip netns exec pc2 ss -tlpn</code> que el proceso pertenece a alumno, y que en tu host el límite sigue en 1024.</p>
+
+<!-- ============================================================ -->
+<h2 id="owner">P.4 Cortafuegos por usuario</h2>
+<p>iptables puede filtrar el tráfico <strong>que genera</strong> un equipo según el usuario o grupo del proceso (módulo <code>owner</code>, solo en OUTPUT). Con el servidor de alumno en pc2:80 en marcha:</p>
+<div class="cmd"><span class="label">host</span><pre><span class="c"># En pc1: los procesos de alumno no pueden ir a la web de pc2</span>
+<span class="p">$ </span>sudo ip netns exec pc1 iptables -A OUTPUT -m owner --uid-owner alumno -p tcp -d 10.0.0.2 --dport 80 -j REJECT
+<span class="c"># root sí puede</span>
+<span class="p">$ </span>sudo ip netns exec pc1 curl -s http://10.0.0.2/ | head -3
+<span class="c"># alumno no: "Connection refused"</span>
+<span class="p">$ </span>sudo ip netns exec pc1 sudo -u alumno curl http://10.0.0.2/
+<span class="c"># Por grupo: nadie del grupo redes puede hacer ping fuera</span>
+<span class="p">$ </span>sudo ip netns exec pc1 iptables -A OUTPUT -m owner --gid-owner redes -p icmp -j DROP
+<span class="p">$ </span>sudo ip netns exec pc1 iptables -L OUTPUT -n -v</pre></div>
+<p>Esto es lo que hacen, a mayor escala, los cortafuegos de "identidad" corporativos: reglas por usuario o grupo en vez de por IP.</p>
+
+<!-- ============================================================ -->
+<h2 id="ssh">P.5 Acceso remoto con SSH: claves y grupos</h2>
+<p>Montamos en pc2 un servidor SSH con una política estricta: <strong>sin contraseñas, sin root, solo el grupo <code>redes</code></strong>. Usamos una configuración propia para no tocar la del sistema.</p>
+<div class="cmd"><span class="label">host</span><pre><span class="p">$ </span>sudo mkdir -p /tmp/lab-ssh
+<span class="p">$ </span>sudo ssh-keygen -t ed25519 -N "" -f /tmp/lab-ssh/host_key
+<span class="p">$ </span>sudo nano /tmp/lab-ssh/sshd_config</pre></div>
+<div class="cmd"><span class="label">/tmp/lab-ssh/sshd_config</span><pre>Port 22
+HostKey /tmp/lab-ssh/host_key
+PidFile none
+LogLevel VERBOSE
+
+PermitRootLogin no
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PubkeyAuthentication yes
+AllowGroups redes
+
+# Los miembros de redes no pueden abrir túneles
+AllowTcpForwarding no
+X11Forwarding no</pre></div>
+<div class="cmd"><span class="label">host · arrancar sshd en pc2 (primer plano, logs en pantalla)</span><pre><span class="c"># Comprobar la configuración antes de arrancar</span>
+<span class="p">$ </span>sudo ip netns exec pc2 /usr/bin/sshd -t -f /tmp/lab-ssh/sshd_config
+<span class="p">$ </span>sudo ip netns exec pc2 /usr/bin/sshd -D -e -f /tmp/lab-ssh/sshd_config</pre></div>
+<h3>La clave de alumno</h3>
+<div class="cmd"><span class="label">host · como alumno</span><pre><span class="p">$ </span>sudo -iu alumno
+<span class="p">alumno$ </span>ssh-keygen -t ed25519 -N "" -f ~/.ssh/id_ed25519
+<span class="c"># "Instalar" la clave pública en el servidor (aquí es el mismo disco)</span>
+<span class="p">alumno$ </span>cp ~/.ssh/id_ed25519.pub ~/.ssh/authorized_keys
+<span class="p">alumno$ </span>chmod 600 ~/.ssh/authorized_keys
+<span class="p">alumno$ </span>exit</pre></div>
+<div class="cmd"><span class="label">host · conectar desde pc1</span><pre><span class="c"># alumno: entra con su clave</span>
+<span class="p">$ </span>sudo ip netns exec pc1 sudo -iu alumno ssh alumno@10.0.0.2 hostname
+<span class="c"># Tu usuario (no está en "redes"): rechazado</span>
+<span class="p">$ </span>sudo ip netns exec pc1 sudo -u $USER ssh $USER@10.0.0.2</pre></div>
+<p>En los logs de sshd verás <code>Accepted publickey for alumno … ED25519 SHA256:…</code> y, para tu usuario, <code>User … not allowed because none of user's groups are listed in AllowGroups</code>.</p>
+<figure class="diagram">
+<svg viewBox="0 0 760 220" role="img" aria-label="Autenticación SSH por clave pública">
+  <defs><marker id="ah9" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="arrow-head"/></marker></defs>
+  <rect x="60" y="8" width="200" height="30" class="box" rx="6"/><text x="160" y="28" text-anchor="middle" class="title">cliente (clave privada)</text>
+  <rect x="500" y="8" width="220" height="30" class="box" rx="6"/><text x="610" y="28" text-anchor="middle" class="title">servidor (authorized_keys)</text>
+  <line x1="160" y1="38" x2="160" y2="215" class="wire dash"/><line x1="610" y1="38" x2="610" y2="215" class="wire dash"/>
+  <line x1="160" y1="60" x2="608" y2="72" class="wire-l5" marker-end="url(#ah9)"/><text x="385" y="58" text-anchor="middle" class="mono">cifrado acordado (como TLS) · usuario alumno</text>
+  <line x1="160" y1="100" x2="608" y2="112" class="wire-l5" marker-end="url(#ah9)"/><text x="385" y="98" text-anchor="middle" class="mono">"puedo usar esta clave pública" + FIRMA</text>
+  <text x="620" y="140" class="small">¿la clave está en</text><text x="620" y="154" class="small">authorized_keys? ¿firma</text><text x="620" y="168" class="small">válida? ¿grupo permitido?</text>
+  <line x1="608" y1="190" x2="162" y2="202" class="wire-l3" marker-end="url(#ah9)"/><text x="385" y="188" text-anchor="middle" class="mono">acceso concedido</text>
+</svg>
+<figcaption>La clave privada nunca sale del cliente: solo se usa para firmar.</figcaption>
+</figure>
+<div class="table-wrap"><table>
+<tr><th>Directiva sshd</th><th>Efecto</th></tr>
+<tr><td><code>PermitRootLogin no</code></td><td>Nadie entra directamente como root (se entra como usuario y se usa sudo: queda registro de quién)</td></tr>
+<tr><td><code>PasswordAuthentication no</code></td><td>Solo claves: inmune a adivinar contraseñas</td></tr>
+<tr><td><code>AllowGroups</code> / <code>AllowUsers</code></td><td>Lista blanca de quién puede entrar</td></tr>
+<tr><td><code>Match Group X</code> + <code>ForceCommand</code></td><td>Un grupo solo puede ejecutar un comando concreto</td></tr>
+<tr><td><code>AllowTcpForwarding no</code></td><td>Prohíbe túneles <code>-L</code>/<code>-R</code>/<code>-D</code></td></tr>
+<tr><td><code>ListenAddress 10.0.0.2</code></td><td>Escuchar solo en una interfaz (p. ej. la de gestión)</td></tr>
+</table></div>
+<div class="note"><p><strong>El problema de escala:</strong> aquí funciona porque pc1 y pc2 comparten disco y usuarios con tu host. En una red real cada servidor tiene sus propios usuarios: dar de alta a alguien en 200 servidores, o quitarle el acceso cuando se va de la empresa, es inviable a mano. Para eso existe un <strong>directorio centralizado</strong>.</p></div>
+
+<!-- ============================================================ -->
+<h2 id="ad">P.6 Directorio centralizado: LDAP, el corazón de Active Directory</h2>
+<p><strong>Active Directory</strong> (AD) de Microsoft no es un único protocolo, sino un conjunto de servicios estándar trabajando juntos:</p>
+<div class="table-wrap"><table>
+<tr><th>Pieza de AD</th><th>Protocolo / estándar</th><th>Puerto</th><th>Equivalente libre</th></tr>
+<tr><td>Directorio de usuarios, grupos, equipos</td><td>LDAP</td><td>389 (636 LDAPS)</td><td>OpenLDAP, 389-DS, Samba AD</td></tr>
+<tr><td>Autenticación con tickets (inicio de sesión único)</td><td>Kerberos</td><td>88</td><td>MIT Kerberos, Heimdal</td></tr>
+<tr><td>Localizar los controladores de dominio</td><td>DNS (registros SRV)</td><td>53</td><td>BIND, dnsmasq, DNS interno de Samba</td></tr>
+<tr><td>Políticas de grupo (GPO)</td><td>SMB + LDAP</td><td>445</td><td>Samba (parcial), Ansible/Salt en Linux</td></tr>
+<tr><td>Hora sincronizada (Kerberos la exige)</td><td>NTP</td><td>123</td><td>chrony, ntpd</td></tr>
+<tr><td>Integración de clientes Linux</td><td>—</td><td>—</td><td>SSSD, realmd, winbind</td></tr>
+</table></div>
+
+<figure class="diagram">
+<svg viewBox="0 0 760 270" role="img" aria-label="Árbol de un directorio LDAP">
+  <rect x="290" y="10" width="180" height="36" class="f-l5" rx="6"/><text x="380" y="33" text-anchor="middle" class="white mono">dc=lab,dc=local</text>
+  <rect x="110" y="90" width="220" height="36" class="box2" rx="6"/><text x="220" y="113" text-anchor="middle" class="mono">ou=usuarios</text>
+  <rect x="430" y="90" width="220" height="36" class="box2" rx="6"/><text x="540" y="113" text-anchor="middle" class="mono">ou=grupos</text>
+  <line x1="380" y1="46" x2="220" y2="90" class="wire"/><line x1="380" y1="46" x2="540" y2="90" class="wire"/>
+  <rect x="30" y="170" width="170" height="36" class="box" rx="6"/><text x="115" y="193" text-anchor="middle" class="mono">uid=ana</text>
+  <rect x="220" y="170" width="170" height="36" class="box" rx="6"/><text x="305" y="193" text-anchor="middle" class="mono">uid=luis</text>
+  <rect x="455" y="170" width="170" height="36" class="box" rx="6"/><text x="540" y="193" text-anchor="middle" class="mono">cn=netadmins</text>
+  <line x1="220" y1="126" x2="115" y2="170" class="wire"/><line x1="220" y1="126" x2="305" y2="170" class="wire"/><line x1="540" y1="126" x2="540" y2="170" class="wire"/>
+  <path d="M455 200 Q300 250 140 206" class="wire-l5 dash"/><text x="300" y="250" text-anchor="middle" class="small">member: uid=ana,ou=usuarios,dc=lab,dc=local</text>
+  <text x="640" y="230" class="small">DN completo de ana:</text><text x="560" y="248" class="mono small">uid=ana,ou=usuarios,dc=lab,dc=local</text>
+</svg>
+<figcaption>Un directorio es un árbol. Cada entrada tiene un nombre único (DN) y atributos.</figcaption>
+</figure>
+
+<h3>Laboratorio: un "controlador de dominio" con OpenLDAP</h3>
+<figure class="diagram">
+<svg viewBox="0 0 760 110" role="img" aria-label="Controlador de dominio y cliente">
+  <rect x="60" y="20" width="250" height="70" class="box2" rx="8"/><text x="185" y="48" text-anchor="middle" class="title">dc (directorio)</text><text x="185" y="70" text-anchor="middle" class="mono small">10.0.20.1 · slapd :389</text>
+  <rect x="450" y="20" width="250" height="70" class="box" rx="8"/><text x="575" y="48" text-anchor="middle" class="title">estacion</text><text x="575" y="70" text-anchor="middle" class="mono small">10.0.20.10 · ldapsearch</text>
+  <line x1="310" y1="55" x2="450" y2="55" class="wire-l5"/>
+</svg>
+</figure>
+<div class="cmd"><span class="label">host</span><pre><span class="p">$ </span>sudo ip netns add dc
+<span class="p">$ </span>sudo ip netns add estacion
+<span class="p">$ </span>sudo ip link add eth0 netns dc type veth peer name eth0 netns estacion
+<span class="p">$ </span>sudo ip netns exec dc ip link set lo up
+<span class="p">$ </span>sudo ip netns exec dc ip link set eth0 up
+<span class="p">$ </span>sudo ip netns exec dc ip addr add 10.0.20.1/24 dev eth0
+<span class="p">$ </span>sudo ip netns exec estacion ip link set lo up
+<span class="p">$ </span>sudo ip netns exec estacion ip link set eth0 up
+<span class="p">$ </span>sudo ip netns exec estacion ip addr add 10.0.20.10/24 dev eth0</pre></div>
+<h4>1. Configuración del servidor</h4>
+<div class="cmd"><span class="label">host</span><pre><span class="p">$ </span>sudo mkdir -p /tmp/lab-ldap/datos
+<span class="c"># Generar el hash de la contraseña del administrador del directorio</span>
+<span class="p">$ </span>slappasswd -s admin123
+<span class="p">$ </span>sudo nano /tmp/lab-ldap/slapd.conf</pre></div>
+<div class="cmd"><span class="label">/tmp/lab-ldap/slapd.conf</span><pre>include /etc/openldap/schema/core.schema
+include /etc/openldap/schema/cosine.schema
+include /etc/openldap/schema/inetorgperson.schema
+include /etc/openldap/schema/nis.schema
+
+pidfile  /tmp/lab-ldap/slapd.pid
+argsfile /tmp/lab-ldap/slapd.args
+
+# Permisos (ACL): las contraseñas solo sirven para autenticarse
+access to attrs=userPassword
+    by self write
+    by anonymous auth
+    by * none
+# El resto: solo usuarios autenticados pueden leer
+access to *
+    by users read
+    by * none
+
+database  mdb
+maxsize   104857600
+suffix    "dc=lab,dc=local"
+rootdn    "cn=admin,dc=lab,dc=local"
+# Pega aquí el {SSHA}... que dio slappasswd
+rootpw    {SSHA}PEGA_AQUI_EL_HASH
+directory /tmp/lab-ldap/datos
+index     objectClass eq
+index     uid eq
+index     member eq</pre></div>
+<div class="cmd"><span class="label">dc · arrancar slapd en primer plano (-d 256 = registrar cada operación)</span><pre><span class="p">$ </span>sudo ip netns exec dc slapd -d 256 -f /tmp/lab-ldap/slapd.conf -h "ldap://10.0.20.1/"</pre></div>
+
+<h4>2. Crear la estructura, usuarios y grupo</h4>
+<p>Los datos se cargan en formato <strong>LDIF</strong>. Crea <code>/tmp/lab-ldap/base.ldif</code>:</p>
+<div class="cmd"><span class="label">/tmp/lab-ldap/base.ldif</span><pre>dn: dc=lab,dc=local
+objectClass: dcObject
+objectClass: organization
+dc: lab
+o: Laboratorio de redes
+
+dn: ou=usuarios,dc=lab,dc=local
+objectClass: organizationalUnit
+ou: usuarios
+
+dn: ou=grupos,dc=lab,dc=local
+objectClass: organizationalUnit
+ou: grupos
+
+dn: uid=ana,ou=usuarios,dc=lab,dc=local
+objectClass: inetOrgPerson
+objectClass: posixAccount
+uid: ana
+cn: Ana García
+sn: García
+mail: ana@lab.local
+uidNumber: 10001
+gidNumber: 10001
+homeDirectory: /home/ana
+loginShell: /bin/bash
+
+dn: uid=luis,ou=usuarios,dc=lab,dc=local
+objectClass: inetOrgPerson
+objectClass: posixAccount
+uid: luis
+cn: Luis Pérez
+sn: Pérez
+mail: luis@lab.local
+uidNumber: 10002
+gidNumber: 10002
+homeDirectory: /home/luis
+loginShell: /bin/bash
+
+dn: cn=netadmins,ou=grupos,dc=lab,dc=local
+objectClass: groupOfNames
+cn: netadmins
+description: Administradores de red
+member: uid=ana,ou=usuarios,dc=lab,dc=local</pre></div>
+<div class="cmd"><span class="label">estacion</span><pre><span class="c"># Sin autenticarse: el directorio no enseña nada (ACL "by * none")</span>
+<span class="p">$ </span>sudo ip netns exec estacion ldapsearch -x -H ldap://10.0.20.1 -b "dc=lab,dc=local"
+<span class="c"># Como administrador (-D quién soy, -W pide la contraseña): cargar el LDIF</span>
+<span class="p">$ </span>sudo ip netns exec estacion ldapadd -x -H ldap://10.0.20.1 -D "cn=admin,dc=lab,dc=local" -W -f /tmp/lab-ldap/base.ldif
+<span class="c"># Poner contraseña a cada usuario</span>
+<span class="p">$ </span>sudo ip netns exec estacion ldappasswd -x -H ldap://10.0.20.1 -D "cn=admin,dc=lab,dc=local" -W -s ana123 "uid=ana,ou=usuarios,dc=lab,dc=local"
+<span class="p">$ </span>sudo ip netns exec estacion ldappasswd -x -H ldap://10.0.20.1 -D "cn=admin,dc=lab,dc=local" -W -s luis123 "uid=luis,ou=usuarios,dc=lab,dc=local"</pre></div>
+
+<h4>3. Autenticación y consultas como un usuario normal</h4>
+<div class="cmd"><span class="label">estacion</span><pre><span class="c"># "Iniciar sesión" (bind) como ana y preguntar quién soy</span>
+<span class="p">$ </span>sudo ip netns exec estacion ldapwhoami -x -H ldap://10.0.20.1 -D "uid=ana,ou=usuarios,dc=lab,dc=local" -w ana123
+<span class="c"># Contraseña errónea: "Invalid credentials (49)"</span>
+<span class="p">$ </span>sudo ip netns exec estacion ldapwhoami -x -H ldap://10.0.20.1 -D "uid=ana,ou=usuarios,dc=lab,dc=local" -w mal
+<span class="c"># Buscar a luis (solo nombre y correo)</span>
+<span class="p">$ </span>sudo ip netns exec estacion ldapsearch -x -H ldap://10.0.20.1 -D "uid=ana,ou=usuarios,dc=lab,dc=local" -w ana123 -b "ou=usuarios,dc=lab,dc=local" "(uid=luis)" cn mail
+<span class="c"># ¿A qué grupos pertenece ana? (lo que pregunta un servidor antes de dejarla entrar)</span>
+<span class="p">$ </span>sudo ip netns exec estacion ldapsearch -x -H ldap://10.0.20.1 -D "uid=ana,ou=usuarios,dc=lab,dc=local" -w ana123 -b "ou=grupos,dc=lab,dc=local" "(member=uid=ana,ou=usuarios,dc=lab,dc=local)" cn
+<span class="c"># ana intenta leer la contraseña (hash) de luis: no aparece</span>
+<span class="p">$ </span>sudo ip netns exec estacion ldapsearch -x -H ldap://10.0.20.1 -D "uid=ana,ou=usuarios,dc=lab,dc=local" -w ana123 -b "uid=luis,ou=usuarios,dc=lab,dc=local" userPassword</pre></div>
+
+<h4>4. Gestionar permisos cambiando el directorio</h4>
+<p>Dar a luis permisos de administrador de red = añadirlo al grupo. Crea <code>/tmp/lab-ldap/luis-admin.ldif</code>:</p>
+<div class="cmd"><span class="label">/tmp/lab-ldap/luis-admin.ldif</span><pre>dn: cn=netadmins,ou=grupos,dc=lab,dc=local
+changetype: modify
+add: member
+member: uid=luis,ou=usuarios,dc=lab,dc=local</pre></div>
+<div class="cmd"><span class="label">estacion</span><pre><span class="p">$ </span>sudo ip netns exec estacion ldapmodify -x -H ldap://10.0.20.1 -D "cn=admin,dc=lab,dc=local" -W -f /tmp/lab-ldap/luis-admin.ldif
+<span class="c"># Comprobar los miembros del grupo</span>
+<span class="p">$ </span>sudo ip netns exec estacion ldapsearch -x -H ldap://10.0.20.1 -D "uid=ana,ou=usuarios,dc=lab,dc=local" -w ana123 -b "cn=netadmins,ou=grupos,dc=lab,dc=local" member
+<span class="c"># Dar de baja a un usuario: se borra en UN sitio y deja de funcionar en toda la red</span>
+<span class="p">$ </span>sudo ip netns exec estacion ldapdelete -x -H ldap://10.0.20.1 -D "cn=admin,dc=lab,dc=local" -W "uid=luis,ou=usuarios,dc=lab,dc=local"</pre></div>
+
+<h4>5. Lección de seguridad: LDAP sin cifrar</h4>
+<div class="cmd"><span class="label">dc</span><pre><span class="p">$ </span>sudo ip netns exec dc tcpdump -i eth0 -n -A port 389</pre></div>
+<p>Repite el <code>ldapwhoami</code> de ana: en la captura aparece <code>ana123</code> en claro. Por eso en producción se usa <strong>LDAPS</strong> (TLS, puerto 636), <strong>StartTLS</strong> (<code>ldapsearch -ZZ</code>) o Kerberos, y Active Directory moderno rechaza los <em>simple bind</em> sin cifrar.</p>
+
+<h3>Cómo se usa esto en una red real</h3>
+<figure class="diagram">
+<svg viewBox="0 0 760 240" role="img" aria-label="Servidores consultando el directorio">
+  <defs><marker id="ah10" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="arrow-head"/></marker></defs>
+  <rect x="290" y="90" width="180" height="60" class="f-l5" rx="8"/><text x="380" y="116" text-anchor="middle" class="white title" style="fill:#fff">Directorio</text><text x="380" y="136" text-anchor="middle" style="fill:#fff" class="small">usuarios · grupos · claves</text>
+  <rect x="20" y="20" width="180" height="50" class="box" rx="8"/><text x="110" y="50" text-anchor="middle">router (SSH admin)</text>
+  <rect x="20" y="170" width="180" height="50" class="box" rx="8"/><text x="110" y="200" text-anchor="middle">servidor Linux (SSSD)</text>
+  <rect x="560" y="20" width="180" height="50" class="box" rx="8"/><text x="650" y="50" text-anchor="middle">VPN / Wi-Fi (RADIUS)</text>
+  <rect x="560" y="170" width="180" height="50" class="box" rx="8"/><text x="650" y="200" text-anchor="middle">aplicación web</text>
+  <line x1="200" y1="45" x2="290" y2="105" class="wire" marker-end="url(#ah10)"/><line x1="200" y1="195" x2="290" y2="135" class="wire" marker-end="url(#ah10)"/>
+  <line x1="560" y1="45" x2="470" y2="105" class="wire" marker-end="url(#ah10)"/><line x1="560" y1="195" x2="470" y2="135" class="wire" marker-end="url(#ah10)"/>
+  <text x="380" y="185" text-anchor="middle" class="small">"¿ana existe? ¿su contraseña es válida?</text><text x="380" y="200" text-anchor="middle" class="small">¿está en netadmins?"</text>
+</svg>
+</figure>
+<div class="table-wrap"><table>
+<tr><th>Necesidad</th><th>Solución típica</th></tr>
+<tr><td>Iniciar sesión en Linux con usuarios del directorio</td><td>SSSD + PAM + NSS (<code>id ana</code> funcionaría en todos los equipos)</td></tr>
+<tr><td>Que solo <code>netadmins</code> entre por SSH a los routers</td><td>SSSD + <code>AllowGroups netadmins</code> en sshd</td></tr>
+<tr><td>Reglas de sudo centralizadas</td><td>Reglas <code>sudoRole</code> en LDAP leídas por SSSD</td></tr>
+<tr><td>Wi-Fi o VPN con usuario y contraseña de empresa</td><td>802.1X / RADIUS (FreeRADIUS) consultando LDAP</td></tr>
+<tr><td>Inicio de sesión único (SSO)</td><td>Kerberos: un ticket al iniciar sesión vale para todos los servicios</td></tr>
+<tr><td>Web corporativa</td><td>LDAP directo, o SAML/OIDC (Keycloak) apoyado en el directorio</td></tr>
+</table></div>
+<div class="note"><p>No configuramos SSSD en el laboratorio a propósito: los namespaces comparten <code>/etc</code> y PAM con tu Arch, así que cambiaría cómo inicias sesión en tu propio equipo. Para practicarlo de verdad, usa una máquina virtual.</p></div>
+
+<details><summary>Avanzado: un Active Directory real con Samba</summary>
+<p>El paquete <code>samba</code> de Arch puede actuar como controlador de dominio AD compatible con clientes Windows. Todo queda dentro de <code>/tmp/lab-samba</code> gracias a <code>--targetdir</code>. Es un servicio grande: considéralo un experimento, puede requerir ajustes según la versión.</p>
+<div class="cmd"><span class="label">host · con el namespace dc del laboratorio (para antes slapd con Ctrl+C)</span><pre><span class="p">$ </span>sudo pacman -S --needed samba
+<span class="p">$ </span>sudo ip netns exec dc samba-tool domain provision --realm=LAB.LOCAL --domain=LAB --server-role=dc --dns-backend=SAMBA_INTERNAL --use-rfc2307 --host-ip=10.0.20.1 --adminpass='Admin.Lab.2026' --targetdir=/tmp/lab-samba --option="interfaces=lo eth0" --option="bind interfaces only=yes"
+<span class="c"># Arrancar el DC en primer plano</span>
+<span class="p">$ </span>sudo ip netns exec dc samba -i -s /tmp/lab-samba/etc/smb.conf</pre></div>
+<div class="cmd"><span class="label">host · otra terminal</span><pre><span class="c"># Usuarios y grupos al estilo AD</span>
+<span class="p">$ </span>sudo ip netns exec dc samba-tool user create ana 'Ana.Lab.2026' -s /tmp/lab-samba/etc/smb.conf
+<span class="p">$ </span>sudo ip netns exec dc samba-tool group add NetAdmins -s /tmp/lab-samba/etc/smb.conf
+<span class="p">$ </span>sudo ip netns exec dc samba-tool group addmembers NetAdmins ana -s /tmp/lab-samba/etc/smb.conf
+<span class="p">$ </span>sudo ip netns exec dc samba-tool user list -s /tmp/lab-samba/etc/smb.conf
+<span class="c"># Los registros SRV con los que los clientes encuentran el dominio</span>
+<span class="p">$ </span>sudo ip netns exec estacion dig @10.0.20.1 _ldap._tcp.lab.local SRV
+<span class="p">$ </span>sudo ip netns exec estacion dig @10.0.20.1 _kerberos._tcp.lab.local SRV
+<span class="c"># Consultar el directorio AD por LDAPS (certificado autofirmado de Samba)</span>
+<span class="p">$ </span>sudo ip netns exec estacion env LDAPTLS_REQCERT=never ldapsearch -H ldaps://10.0.20.1 -x -D "ana@lab.local" -w 'Ana.Lab.2026' -b "dc=lab,dc=local" "(sAMAccountName=ana)" memberOf
+<span class="c"># Recursos compartidos SMB del DC</span>
+<span class="p">$ </span>sudo ip netns exec estacion smbclient -L //10.0.20.1 -U ana</pre></div>
+<p>Limpieza: Ctrl+C en <code>samba</code> y <code>sudo rm -r /tmp/lab-samba</code>.</p>
+</details>
+
+<!-- ============================================================ -->
+<h2 id="resumen">P.7 Resumen: modelo de permisos en una red</h2>
+<div class="table-wrap"><table>
+<tr><th>Pregunta</th><th>Mecanismo</th><th>Dónde se aplica</th></tr>
+<tr><td>¿Quién eres?</td><td>Autenticación: contraseña, clave SSH, certificado, Kerberos</td><td>sshd, LDAP bind, TLS</td></tr>
+<tr><td>¿Qué puedes hacer?</td><td>Autorización: grupos, sudoers, ACL</td><td>sudo, AllowGroups, ACL de slapd</td></tr>
+<tr><td>¿Qué has hecho?</td><td>Auditoría: registros</td><td>journalctl, logs de sshd y slapd</td></tr>
+<tr><td>¿Desde dónde?</td><td>Segmentación: cortafuegos, VLAN</td><td>iptables, bridge vlan</td></tr>
+<tr><td>¿Con qué privilegio mínimo?</td><td>Capabilities, comandos concretos en sudo</td><td>setcap, Cmnd_Alias</td></tr>
+</table></div>
+
+<h2 id="limpieza">Limpieza</h2>
+<div class="cmd"><span class="label">host</span><pre><span class="c"># Para con Ctrl+C sshd, slapd y los servidores web; después:</span>
+<span class="p">$ </span>sudo ip netns del pc1
+<span class="p">$ </span>sudo ip netns del pc2
+<span class="p">$ </span>sudo ip netns del dc
+<span class="p">$ </span>sudo ip netns del estacion
+<span class="p">$ </span>sudo rm /etc/sudoers.d/lab-redes
+<span class="p">$ </span>sudo userdel -r alumno
+<span class="p">$ </span>sudo groupdel redes
+<span class="p">$ </span>rm ~/lab-tcpdump
+<span class="p">$ </span>sudo rm -r /tmp/lab-ssh /tmp/lab-ldap</pre></div>
+
+<div class="pager"><a href="capa5.html">← Capas 5-7</a><a href="limpieza.html">Chuleta y limpieza →</a></div>
+</main>
+</div>
+<footer>netns·lab · Permisos e identidad</footer>
+</body>
+</html>

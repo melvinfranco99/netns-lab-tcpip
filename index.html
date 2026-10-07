@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Laboratorio TCP/IP con netns</title>
+<meta name="description" content="Aprende el modelo TCP/IP capa a capa creando redes virtuales con ip netns en Linux (Arch Linux).">
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/app.js"></script>
+</head>
+<body>
+<header class="topbar"><div class="topbar-inner">
+  <a class="brand" href="index.html">netns<span>·</span>lab</a>
+  <nav class="topnav">
+    <a href="index.html" class="active">Inicio</a>
+    <a href="capa2.html">Capa 2</a>
+    <a href="capa3.html">Capa 3</a>
+    <a href="capa4.html">Capa 4</a>
+    <a href="capa5.html">Capas 5-7</a>
+    <a href="permisos.html">Permisos</a>
+    <a href="limpieza.html">Chuleta</a>
+  </nav>
+  <button id="theme-toggle" aria-label="Cambiar tema">◐</button>
+</div></header>
+
+<div class="layout">
+<aside class="toc"><h4>En esta página</h4><ol></ol></aside>
+<main>
+<span class="layer-tag tag-gen">Introducción</span>
+<h1>Aprende TCP/IP capa a capa con <code>ip netns</code></h1>
+<p class="lead">Un laboratorio práctico para construir redes completas dentro de tu propio Linux: ordenadores, switches, routers, servidores DHCP/DNS/web, VPN, cortafuegos y directorios de usuarios. Todo con comandos básicos, uno a uno, sin scripts.</p>
+
+<div class="cards">
+  <a class="card l2" href="capa2.html"><span class="layer-tag tag-l2">Capa 2</span><h3>Enlace</h3><p>MAC, tramas Ethernet, ARP, switches (bridge), VLAN y un ping construido a mano en ambos extremos.</p></a>
+  <a class="card l3" href="capa3.html"><span class="layer-tag tag-l3">Capa 3</span><h3>Red</h3><p>IP, rutas, routers en cadena y en malla, NAT, cortafuegos, DHCP, DNS, web, VPN, red tipo onion, nmap.</p></a>
+  <a class="card l4" href="capa4.html"><span class="layer-tag tag-l4">Capa 4</span><h3>Transporte</h3><p>TCP y UDP, puertos, handshake manual SYN / SYN-ACK / ACK, conntrack, pérdidas y retardos.</p></a>
+  <a class="card l5" href="capa5.html"><span class="layer-tag tag-l5">Capas 5-7</span><h3>Sesión y aplicación</h3><p>HTTP a mano, sesiones y cookies, TLS, DNS por dentro, SSH y túneles.</p></a>
+  <a class="card" href="permisos.html"><span class="layer-tag tag-gen">Extra</span><h3>Permisos e identidad</h3><p>Modo administrador, sudo, capabilities, SSH por claves, directorio LDAP estilo Active Directory.</p></a>
+  <a class="card" href="limpieza.html"><span class="layer-tag tag-gen">Referencia</span><h3>Chuleta y limpieza</h3><p>Todos los comandos clave resumidos y cómo dejar el sistema como estaba.</p></a>
+</div>
+
+<h2 id="modelo">El modelo TCP/IP frente a OSI</h2>
+<p>El modelo OSI tiene 7 capas teóricas; TCP/IP, el que realmente usa Internet, las agrupa en 4 (o 5 si separamos física y enlace). En este laboratorio seguimos la numeración OSI (capa 2, 3, 4…) porque es la que se usa en el día a día ("un switch de capa 2", "un balanceador de capa 7").</p>
+<div class="table-wrap"><table>
+<tr><th>OSI</th><th>TCP/IP</th><th>Unidad de datos</th><th>Dirección</th><th>Equipos / ejemplos</th><th>Herramientas en el laboratorio</th></tr>
+<tr><td>7 Aplicación<br>6 Presentación<br>5 Sesión</td><td>Aplicación</td><td>Mensaje</td><td>Nombre (DNS), URL, usuario</td><td>HTTP, DNS, DHCP, SSH, TLS, LDAP</td><td><code>curl</code>, <code>dig</code>, <code>openssl</code>, <code>ssh</code>, <code>ldapsearch</code></td></tr>
+<tr><td>4 Transporte</td><td>Transporte</td><td>Segmento (TCP) / Datagrama (UDP)</td><td>Puerto</td><td>TCP, UDP, balanceadores L4</td><td><code>nc</code>, <code>ss</code>, <code>conntrack</code>, scapy</td></tr>
+<tr><td>3 Red</td><td>Internet</td><td>Paquete</td><td>Dirección IP</td><td>Routers, cortafuegos</td><td><code>ip addr</code>, <code>ip route</code>, <code>iptables</code>, <code>ping</code>, <code>traceroute</code>, <code>nmap</code></td></tr>
+<tr><td>2 Enlace</td><td rowspan="2">Acceso a red</td><td>Trama</td><td>Dirección MAC</td><td>Switches, tarjetas de red</td><td><code>ip link</code>, <code>ip neigh</code>, <code>bridge</code>, <code>arping</code>, <code>tcpdump -e</code></td></tr>
+<tr><td>1 Física</td><td>Bits</td><td>—</td><td>Cables, radio</td><td>El cable virtual <code>veth</code></td></tr>
+</table></div>
+
+<figure class="diagram">
+<svg viewBox="0 0 760 250" role="img" aria-label="Encapsulación de un mensaje HTTP en TCP, IP y Ethernet">
+  <text x="10" y="22" class="title">Encapsulación: cada capa añade su cabecera</text>
+  <rect x="430" y="40" width="160" height="34" class="box" /><text x="510" y="62" text-anchor="middle">Datos HTTP</text>
+  <text x="620" y="62" class="small">capa 7 → mensaje</text>
+  <rect x="330" y="88" width="100" height="34" rx="0" class="f-l4"/><text x="380" y="110" text-anchor="middle" class="white">Cab. TCP</text>
+  <rect x="430" y="88" width="160" height="34" class="box" /><text x="510" y="110" text-anchor="middle">Datos HTTP</text>
+  <text x="620" y="110" class="small">capa 4 → segmento</text>
+  <rect x="230" y="136" width="100" height="34" class="f-l3"/><text x="280" y="158" text-anchor="middle" class="white">Cab. IP</text>
+  <rect x="330" y="136" width="100" height="34" class="f-l4"/><text x="380" y="158" text-anchor="middle" class="white">Cab. TCP</text>
+  <rect x="430" y="136" width="160" height="34" class="box" /><text x="510" y="158" text-anchor="middle">Datos HTTP</text>
+  <text x="620" y="158" class="small">capa 3 → paquete</text>
+  <rect x="100" y="184" width="130" height="34" class="f-l2"/><text x="165" y="206" text-anchor="middle" class="white">Cab. Ethernet</text>
+  <rect x="230" y="184" width="100" height="34" class="f-l3"/><text x="280" y="206" text-anchor="middle" class="white">Cab. IP</text>
+  <rect x="330" y="184" width="100" height="34" class="f-l4"/><text x="380" y="206" text-anchor="middle" class="white">Cab. TCP</text>
+  <rect x="430" y="184" width="160" height="34" class="box" /><text x="510" y="206" text-anchor="middle">Datos HTTP</text>
+  <rect x="590" y="184" width="30" height="34" class="f-l2"/><text x="605" y="206" text-anchor="middle" class="white">FCS</text>
+  <text x="630" y="206" class="small">capa 2 → trama</text>
+  <text x="100" y="240" class="small">MAC origen/destino · EtherType</text>
+  <text x="230" y="240" class="small">IP origen/destino · TTL</text>
+  <text x="430" y="240" class="small">puertos · nº secuencia · flags</text>
+</svg>
+<figcaption>Al enviar se encapsula de arriba abajo; al recibir, cada capa quita su cabecera de abajo arriba.</figcaption>
+</figure>
+
+<h2 id="netns">¿Qué es un network namespace?</h2>
+<p>Un <strong>network namespace</strong> (netns) es una copia aislada de la pila de red del kernel de Linux. Cada netns tiene sus propias interfaces, direcciones IP, tabla de rutas, tabla ARP, reglas de iptables y sockets. Para nosotros, <strong>cada netns es un "ordenador" virtual</strong>, pero sin el coste de una máquina virtual: comparten el mismo kernel y el mismo sistema de ficheros.</p>
+<p>Para "cablearlos" usamos interfaces <code>veth</code> (virtual ethernet): siempre se crean <strong>por parejas</strong>, como los dos extremos de un cable. Lo que entra por un extremo sale por el otro. Para hacer un switch usamos un <code>bridge</code> de Linux.</p>
+
+<figure class="diagram">
+<svg viewBox="0 0 760 210" role="img" aria-label="Dos namespaces unidos por un par veth">
+  <rect x="10" y="10" width="740" height="190" class="ns" rx="10"/>
+  <text x="24" y="32" class="small">Tu Arch Linux (namespace raíz: tu wifi/ethernet real, no se toca)</text>
+  <rect x="50" y="55" width="230" height="120" class="box" rx="10"/>
+  <text x="165" y="80" text-anchor="middle" class="title">netns «pc1»</text>
+  <text x="165" y="102" text-anchor="middle" class="small">rutas, ARP, iptables propios</text>
+  <rect x="200" y="125" width="100" height="32" class="f-l2" rx="5"/><text x="250" y="146" text-anchor="middle" class="white mono">veth-pc1</text>
+  <rect x="480" y="55" width="230" height="120" class="box" rx="10"/>
+  <text x="595" y="80" text-anchor="middle" class="title">netns «pc2»</text>
+  <text x="595" y="102" text-anchor="middle" class="small">rutas, ARP, iptables propios</text>
+  <rect x="460" y="125" width="100" height="32" class="f-l2" rx="5"/><text x="510" y="146" text-anchor="middle" class="white mono">veth-pc2</text>
+  <line x1="300" y1="141" x2="460" y2="141" class="wire-l2"/>
+  <text x="380" y="132" text-anchor="middle" class="small">par veth = cable</text>
+</svg>
+<figcaption>Cada recuadro es un "ordenador". El cable virtual veth une dos namespaces.</figcaption>
+</figure>
+
+<div class="table-wrap"><table>
+<tr><th>Concepto real</th><th>Equivalente en Linux</th><th>Comando para crearlo</th></tr>
+<tr><td>Ordenador / servidor</td><td>Network namespace</td><td><code>ip netns add pc1</code></td></tr>
+<tr><td>Cable de red</td><td>Par <code>veth</code></td><td><code>ip link add a type veth peer name b</code></td></tr>
+<tr><td>Switch</td><td>Bridge de Linux</td><td><code>ip link add br0 type bridge</code></td></tr>
+<tr><td>Router</td><td>Namespace con <code>ip_forward=1</code></td><td><code>sysctl -w net.ipv4.ip_forward=1</code></td></tr>
+<tr><td>Cortafuegos</td><td>iptables / nftables dentro del namespace</td><td><code>iptables -A FORWARD ...</code></td></tr>
+<tr><td>Cable con pérdidas o lento</td><td>Disciplina de cola <code>netem</code></td><td><code>tc qdisc add dev X root netem loss 10%</code></td></tr>
+</table></div>
+
+<h2 id="instalacion">Instalación en Arch Linux</h2>
+<p>Instala todas las herramientas que usaremos durante el laboratorio:</p>
+<div class="cmd"><span class="label">host</span><pre><span class="p">$ </span>sudo pacman -S --needed iproute2 iputils tcpdump nmap iptables dnsmasq bind wireguard-tools socat openbsd-netcat python-scapy traceroute ethtool conntrack-tools openssl openssh curl dhcpcd openldap</pre></div>
+<div class="table-wrap"><table>
+<tr><th>Paquete</th><th>Para qué lo usamos</th></tr>
+<tr><td><code>iproute2</code></td><td><code>ip</code> (netns, link, addr, route, neigh), <code>bridge</code>, <code>ss</code>, <code>tc</code></td></tr>
+<tr><td><code>iputils</code></td><td><code>ping</code>, <code>arping</code>, <code>tracepath</code></td></tr>
+<tr><td><code>tcpdump</code></td><td>Ver los paquetes que pasan por una interfaz</td></tr>
+<tr><td><code>python-scapy</code></td><td>Fabricar tramas y paquetes a mano, campo a campo</td></tr>
+<tr><td><code>nmap</code></td><td>Descubrir equipos y escanear puertos en el laboratorio</td></tr>
+<tr><td><code>iptables</code>, <code>conntrack-tools</code></td><td>Cortafuegos, NAT y tabla de conexiones</td></tr>
+<tr><td><code>dnsmasq</code></td><td>Servidor DHCP y DNS ligero</td></tr>
+<tr><td><code>bind</code></td><td>Trae <code>dig</code> para hacer consultas DNS</td></tr>
+<tr><td><code>wireguard-tools</code></td><td>VPN</td></tr>
+<tr><td><code>socat</code>, <code>openbsd-netcat</code></td><td>Clientes y servidores TCP/UDP "a mano", reenviadores</td></tr>
+<tr><td><code>openssl</code>, <code>openssh</code>, <code>curl</code></td><td>TLS, SSH, HTTP</td></tr>
+<tr><td><code>openldap</code></td><td>Directorio de usuarios (estilo Active Directory)</td></tr>
+</table></div>
+<div class="note"><p><strong>Todo funciona con <code>sudo</code></strong>. Crear namespaces necesita privilegios de root. Puedes escribir <code>sudo</code> delante de cada comando (como en esta web) o abrir una consola de root con <code>sudo -i</code> y quitarlo. Tu conexión real a Internet no se ve afectada: todo vive en namespaces separados.</p></div>
+
+<h2 id="primeros">Primeros pasos con ip netns</h2>
+<p>Antes de empezar las capas, juega un minuto con los comandos básicos:</p>
+<div class="cmd"><span class="label">host</span><pre><span class="c"># Crear un namespace llamado prueba</span>
+<span class="p">$ </span>sudo ip netns add prueba
+<span class="c"># Listar los namespaces que existen</span>
+<span class="p">$ </span>ip netns list
+<span class="c"># Ejecutar un comando DENTRO del namespace</span>
+<span class="p">$ </span>sudo ip netns exec prueba ip link
+<span class="c"># Abrir una consola entera dentro del namespace (sales con exit)</span>
+<span class="p">$ </span>sudo ip netns exec prueba bash</pre></div>
+<p>Verás que solo existe la interfaz <code>lo</code> (loopback) y que además está apagada (<code>state DOWN</code>):</p>
+<pre class="out">1: lo: &lt;LOOPBACK&gt; mtu 65536 qdisc noop state DOWN mode DEFAULT group default qlen 1000
+    link/loopback 00:00:00:00:00:00 brd 00:00:00:00:00:00</pre>
+<div class="cmd"><span class="label">host</span><pre><span class="c"># Encender el loopback y probarlo</span>
+<span class="p">$ </span>sudo ip netns exec prueba ip link set lo up
+<span class="p">$ </span>sudo ip netns exec prueba ping -c 2 127.0.0.1
+<span class="c"># Borrar el namespace (borra también sus interfaces)</span>
+<span class="p">$ </span>sudo ip netns del prueba</pre></div>
+
+<div class="ok"><p><strong>Truco para no perderte:</strong> abre una terminal por cada "ordenador" y entra en él con <code>sudo ip netns exec pc1 bash</code>. Así cada ventana es un equipo distinto. Para saber en cuál estás, ejecuta <code>ip netns identify</code>.</p></div>
+
+<h2 id="convenciones">Cómo leer esta guía</h2>
+<ul>
+  <li>La etiqueta encima de cada bloque indica <strong>dónde</strong> se ejecuta: <code>host</code> (tu Arch normal), <code>pc1</code>, <code>pc2</code>, <code>r1</code>… Cuando dice <code>pc1</code> se asume que el comando se lanza con <code>sudo ip netns exec pc1 …</code> (lo escribimos completo en las primeras secciones de cada capa).</li>
+  <li>Las líneas en gris que empiezan por <code>#</code> son comentarios; el botón <em>copiar</em> los quita.</li>
+  <li>Los bloques punteados son la salida esperada (puede variar ligeramente en tu equipo: las MAC aleatorias, los tiempos…).</li>
+  <li>Cada capa empieza desde cero. Al final de cada laboratorio está el comando para borrarlo.</li>
+  <li>Usamos MAC fijas tipo <code>02:00:00:00:00:01</code> (el bit "02" indica dirección administrada localmente) para que los resultados sean fáciles de leer.</li>
+</ul>
+
+<h2 id="ruta">Recorrido recomendado</h2>
+<ol class="steps">
+  <li><a href="capa2.html">Capa 2</a>: dos PCs con un cable, MAC y ARP, un switch, tramas fabricadas a mano y un ping desmontado pieza a pieza.</li>
+  <li><a href="capa3.html">Capa 3</a>: direccionamiento, routers, rutas estáticas, redes en cadena y en malla, NAT, cortafuegos, servicios (DHCP, DNS, web), VPN y una red de relevos tipo onion.</li>
+  <li><a href="capa4.html">Capa 4</a>: puertos, TCP paso a paso, UDP, estados de conexión y la red bajo condiciones malas.</li>
+  <li><a href="capa5.html">Capas 5-7</a>: hablar HTTP a mano, sesiones, TLS, DNS por dentro, SSH y túneles.</li>
+  <li><a href="permisos.html">Permisos e identidad</a>: quién puede hacer qué en la red: sudo, capabilities, SSH con claves, LDAP centralizado.</li>
+</ol>
+
+<div class="pager"><span></span><a href="capa2.html">Capa 2: Enlace →</a></div>
+</main>
+</div>
+<footer>Laboratorio educativo de redes con Linux network namespaces · Todo se ejecuta aislado en tu propio equipo.</footer>
+</body>
+</html>

@@ -1,0 +1,1095 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Capa 3 · Red</title>
+<meta name="description" content="Capa de red con ip netns: IP, routers, rutas, NAT, cortafuegos, DHCP, DNS, web, VPN, red de relevos tipo onion y nmap.">
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/app.js"></script>
+</head>
+<body>
+<header class="topbar"><div class="topbar-inner">
+  <a class="brand" href="index.html">netns<span>·</span>lab</a>
+  <nav class="topnav">
+    <a href="index.html">Inicio</a>
+    <a href="capa2.html">Capa 2</a>
+    <a href="capa3.html" class="active">Capa 3</a>
+    <a href="capa4.html">Capa 4</a>
+    <a href="capa5.html">Capas 5-7</a>
+    <a href="permisos.html">Permisos</a>
+    <a href="limpieza.html">Chuleta</a>
+  </nav>
+  <button id="theme-toggle" aria-label="Cambiar tema">◐</button>
+</div></header>
+
+<div class="layout">
+<aside class="toc"><h4>Capa 3</h4><ol></ol></aside>
+<main>
+<span class="layer-tag tag-l3">Capa 3 · Red</span>
+<h1>Capa 3: IP, routers y servicios de red</h1>
+<p class="lead">La capa de red lleva <strong>paquetes</strong> de una red a otra. La MAC solo sirve dentro de un segmento; la <strong>IP</strong> identifica al equipo de punta a punta y los <strong>routers</strong> deciden el siguiente salto.</p>
+
+<div class="note">
+<p><strong>Convención de esta página.</strong> Los cables (pares veth) se crean desde el <code>host</code>. Para configurar cada aparato abre una terminal dentro de él:</p>
+<div class="cmd"><span class="label">host</span><pre><span class="p">$ </span>sudo ip netns exec r1 bash</pre></div>
+<p>Los bloques etiquetados <code>r1</code>, <code>pc1</code>… se escriben en esa terminal, sin <code>sudo ip netns exec</code> delante. El prompt <code>r1#</code> te recuerda dónde estás. Si prefieres no abrir terminales, añade <code>sudo ip netns exec r1</code> delante de cada comando: es equivalente.</p>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="ip">3.1 Direcciones IP y la cabecera IPv4</h2>
+<div class="table-wrap"><table>
+<tr><th>Notación</th><th>Máscara</th><th>Direcciones</th><th>Equipos usables</th><th>Uso típico</th></tr>
+<tr><td><code>/8</code></td><td>255.0.0.0</td><td>16 777 216</td><td>16 777 214</td><td>Redes enormes (10.0.0.0/8)</td></tr>
+<tr><td><code>/16</code></td><td>255.255.0.0</td><td>65 536</td><td>65 534</td><td>Campus, empresa</td></tr>
+<tr><td><code>/24</code></td><td>255.255.255.0</td><td>256</td><td>254</td><td>Una LAN típica</td></tr>
+<tr><td><code>/30</code></td><td>255.255.255.252</td><td>4</td><td>2</td><td>Enlace punto a punto entre routers</td></tr>
+<tr><td><code>/32</code></td><td>255.255.255.255</td><td>1</td><td>1</td><td>Un único equipo (ruta a host)</td></tr>
+</table></div>
+<p>En <code>10.0.1.0/24</code>: <code>10.0.1.0</code> es la dirección de red, <code>10.0.1.255</code> el broadcast y de <code>.1</code> a <code>.254</code> son para equipos.</p>
+<div class="table-wrap"><table>
+<tr><th>Rango</th><th>Para qué</th></tr>
+<tr><td><code>10.0.0.0/8</code>, <code>172.16.0.0/12</code>, <code>192.168.0.0/16</code></td><td>Redes privadas (RFC 1918). Las usaremos.</td></tr>
+<tr><td><code>203.0.113.0/24</code>, <code>198.51.100.0/24</code></td><td>Reservadas para documentación: las usamos como "Internet falsa".</td></tr>
+<tr><td><code>127.0.0.0/8</code></td><td>Loopback</td></tr>
+<tr><td><code>169.254.0.0/16</code></td><td>Link-local (sin DHCP)</td></tr>
+<tr><td><code>100.64.0.0/10</code></td><td>CGNAT de operadores</td></tr>
+</table></div>
+
+<figure class="diagram">
+<svg viewBox="0 0 760 220" role="img" aria-label="Campos de la cabecera IPv4">
+  <text x="10" y="18" class="title">Cabecera IPv4 (20 bytes sin opciones)</text>
+  <rect x="10" y="30" width="80" height="34" class="box"/><text x="50" y="52" text-anchor="middle" class="small">Versión|IHL</text>
+  <rect x="90" y="30" width="110" height="34" class="box"/><text x="145" y="52" text-anchor="middle" class="small">DSCP/ECN (ToS)</text>
+  <rect x="200" y="30" width="540" height="34" class="box"/><text x="470" y="52" text-anchor="middle" class="small">Longitud total</text>
+  <rect x="10" y="64" width="370" height="34" class="box"/><text x="195" y="86" text-anchor="middle" class="small">Identificación (fragmentos)</text>
+  <rect x="380" y="64" width="90" height="34" class="box"/><text x="425" y="86" text-anchor="middle" class="small">Flags DF/MF</text>
+  <rect x="470" y="64" width="270" height="34" class="box"/><text x="605" y="86" text-anchor="middle" class="small">Desplazamiento de fragmento</text>
+  <rect x="10" y="98" width="190" height="34" class="f-l3"/><text x="105" y="120" text-anchor="middle" class="white">TTL</text>
+  <rect x="200" y="98" width="180" height="34" class="box"/><text x="290" y="120" text-anchor="middle" class="small">Protocolo (1 ICMP, 6 TCP, 17 UDP)</text>
+  <rect x="380" y="98" width="360" height="34" class="box"/><text x="560" y="120" text-anchor="middle" class="small">Checksum de cabecera</text>
+  <rect x="10" y="132" width="730" height="34" class="f-l3" opacity="0.85"/><text x="375" y="154" text-anchor="middle" class="white">IP origen (32 bits)</text>
+  <rect x="10" y="166" width="730" height="34" class="f-l3" opacity="0.7"/><text x="375" y="188" text-anchor="middle" class="white">IP destino (32 bits)</text>
+</svg>
+<figcaption>Cada router resta 1 al TTL; si llega a 0, descarta el paquete y avisa con ICMP "Time Exceeded".</figcaption>
+</figure>
+
+<!-- ============================================================ -->
+<h2 id="dos-pcs">3.2 Dos PCs conectados directamente</h2>
+<figure class="diagram">
+<svg viewBox="0 0 760 120" role="img" aria-label="pc1 y pc2 directos">
+  <rect x="60" y="25" width="220" height="70" class="box" rx="8"/><text x="170" y="55" text-anchor="middle" class="title">pc1</text><text x="170" y="77" text-anchor="middle" class="mono">eth0 10.0.0.1/24</text>
+  <rect x="480" y="25" width="220" height="70" class="box" rx="8"/><text x="590" y="55" text-anchor="middle" class="title">pc2</text><text x="590" y="77" text-anchor="middle" class="mono">eth0 10.0.0.2/24</text>
+  <line x1="280" y1="60" x2="480" y2="60" class="wire-l3"/>
+</svg>
+</figure>
+<div class="cmd"><span class="label">host</span><pre><span class="p">$ </span>sudo ip netns add pc1
+<span class="p">$ </span>sudo ip netns add pc2
+<span class="p">$ </span>sudo ip link add eth0 netns pc1 type veth peer name eth0 netns pc2</pre></div>
+<div class="cmd"><span class="label">pc1</span><pre><span class="p">pc1# </span>ip link set lo up
+<span class="p">pc1# </span>ip link set eth0 up
+<span class="p">pc1# </span>ip addr add 10.0.0.1/24 dev eth0</pre></div>
+<div class="cmd"><span class="label">pc2</span><pre><span class="p">pc2# </span>ip link set lo up
+<span class="p">pc2# </span>ip link set eth0 up
+<span class="p">pc2# </span>ip addr add 10.0.0.2/24 dev eth0</pre></div>
+<h3>La tabla de rutas</h3>
+<div class="cmd"><span class="label">pc1</span><pre><span class="p">pc1# </span>ip route show
+<span class="c"># ¿Por dónde saldría un paquete hacia 10.0.0.2? ¿Y hacia 8.8.8.8?</span>
+<span class="p">pc1# </span>ip route get 10.0.0.2
+<span class="p">pc1# </span>ip route get 8.8.8.8
+<span class="p">pc1# </span>ping -c 2 10.0.0.2</pre></div>
+<pre class="out">10.0.0.0/24 dev eth0 proto kernel scope link src 10.0.0.1
+10.0.0.2 dev eth0 src 10.0.0.1 uid 0
+RTNETLINK answers: Network is unreachable</pre>
+<p>Al poner la IP con <code>/24</code>, el kernel añade solo una <strong>ruta conectada</strong>: "toda la 10.0.0.0/24 está directamente en eth0". Para cualquier otra red no hay ruta: <em>Network is unreachable</em>. Para salir de su red, un PC necesita un <strong>router</strong> y una <strong>puerta de enlace</strong>.</p>
+<div class="table-wrap"><table>
+<tr><th>Parte de la ruta</th><th>Significado</th></tr>
+<tr><td><code>10.0.0.0/24</code></td><td>Destino (red)</td></tr>
+<tr><td><code>dev eth0</code></td><td>Interfaz de salida</td></tr>
+<tr><td><code>via X</code></td><td>Siguiente salto (router). Si no aparece, el destino está en la misma red</td></tr>
+<tr><td><code>proto kernel</code></td><td>Quién la creó: kernel (automática), static (a mano), dhcp, bird…</td></tr>
+<tr><td><code>scope link</code></td><td>Destino alcanzable directamente en el enlace</td></tr>
+<tr><td><code>src 10.0.0.1</code></td><td>IP de origen preferida</td></tr>
+<tr><td><code>metric N</code></td><td>Prioridad: menor = preferida</td></tr>
+</table></div>
+<p><strong>Con un switch en medio</strong> la capa 3 no cambia nada: los PCs siguen en la misma red <code>10.0.0.0/24</code> y no necesitan router. Repite el laboratorio <a href="capa2.html#switch">2.6</a> si quieres verlo: el switch es transparente para IP.</p>
+<div class="cmd"><span class="label">host · limpieza</span><pre><span class="p">$ </span>sudo ip netns del pc1
+<span class="p">$ </span>sudo ip netns del pc2</pre></div>
+
+<!-- ============================================================ -->
+<h2 id="router">3.3 Un router entre dos redes</h2>
+<figure class="diagram">
+<svg viewBox="0 0 760 170" role="img" aria-label="pc1, router r1 y pc2 en dos redes distintas">
+  <rect x="10" y="40" width="200" height="90" class="box" rx="8"/><text x="110" y="68" text-anchor="middle" class="title">pc1</text><text x="110" y="90" text-anchor="middle" class="mono small">eth0 10.0.1.10/24</text><text x="110" y="110" text-anchor="middle" class="mono small">gw 10.0.1.1</text>
+  <rect x="280" y="30" width="200" height="110" class="box2" rx="8"/><text x="380" y="58" text-anchor="middle" class="title">r1 (router)</text><text x="380" y="82" text-anchor="middle" class="mono small">eth1 10.0.1.1/24</text><text x="380" y="102" text-anchor="middle" class="mono small">eth2 10.0.2.1/24</text><text x="380" y="124" text-anchor="middle" class="small">ip_forward=1</text>
+  <rect x="550" y="40" width="200" height="90" class="box" rx="8"/><text x="650" y="68" text-anchor="middle" class="title">pc2</text><text x="650" y="90" text-anchor="middle" class="mono small">eth0 10.0.2.10/24</text><text x="650" y="110" text-anchor="middle" class="mono small">gw 10.0.2.1</text>
+  <line x1="210" y1="85" x2="280" y2="85" class="wire-l3"/><line x1="480" y1="85" x2="550" y2="85" class="wire-l3"/>
+  <text x="245" y="160" text-anchor="middle" class="small">red 10.0.1.0/24</text><text x="515" y="160" text-anchor="middle" class="small">red 10.0.2.0/24</text>
+</svg>
+<figcaption>Laboratorio 3.3. Lo reutilizaremos en el cortafuegos y la VPN.</figcaption>
+</figure>
+<h3>Crear aparatos y cables</h3>
+<div class="cmd"><span class="label">host</span><pre><span class="p">$ </span>sudo ip netns add pc1
+<span class="p">$ </span>sudo ip netns add r1
+<span class="p">$ </span>sudo ip netns add pc2
+<span class="p">$ </span>sudo ip link add eth0 netns pc1 type veth peer name eth1 netns r1
+<span class="p">$ </span>sudo ip link add eth0 netns pc2 type veth peer name eth2 netns r1</pre></div>
+<h3>Configurar el router</h3>
+<div class="cmd"><span class="label">r1</span><pre><span class="p">r1# </span>ip link set lo up
+<span class="p">r1# </span>ip link set eth1 up
+<span class="p">r1# </span>ip link set eth2 up
+<span class="p">r1# </span>ip addr add 10.0.1.1/24 dev eth1
+<span class="p">r1# </span>ip addr add 10.0.2.1/24 dev eth2
+<span class="c"># Lo que convierte un equipo en router: reenviar paquetes que no son para él</span>
+<span class="p">r1# </span>sysctl -w net.ipv4.ip_forward=1
+<span class="p">r1# </span>ip route</pre></div>
+<h3>Configurar los PCs con su puerta de enlace</h3>
+<div class="cmd"><span class="label">pc1</span><pre><span class="p">pc1# </span>ip link set lo up
+<span class="p">pc1# </span>ip link set eth0 up
+<span class="p">pc1# </span>ip addr add 10.0.1.10/24 dev eth0
+<span class="c"># Ruta por defecto: "para todo lo que no conozca, pregunta al router"</span>
+<span class="p">pc1# </span>ip route add default via 10.0.1.1</pre></div>
+<div class="cmd"><span class="label">pc2</span><pre><span class="p">pc2# </span>ip link set lo up
+<span class="p">pc2# </span>ip link set eth0 up
+<span class="p">pc2# </span>ip addr add 10.0.2.10/24 dev eth0
+<span class="p">pc2# </span>ip route add default via 10.0.2.1</pre></div>
+<div class="cmd"><span class="label">pc1</span><pre><span class="p">pc1# </span>ping -c 3 10.0.2.10
+<span class="p">pc1# </span>ip route get 10.0.2.10</pre></div>
+
+<h3>Qué cambia y qué no al atravesar un router</h3>
+<p>Captura a los dos lados del router a la vez (dos terminales):</p>
+<div class="cmd"><span class="label">r1 · terminal A y B</span><pre><span class="p">r1# </span>tcpdump -i eth1 -e -n -v icmp
+<span class="p">r1# </span>tcpdump -i eth2 -e -n -v icmp</pre></div>
+<figure class="diagram">
+<svg viewBox="0 0 760 200" role="img" aria-label="Las MAC cambian en cada salto, las IP no">
+  <text x="10" y="20" class="title">El mismo ping visto en los dos cables</text>
+  <text x="10" y="55" class="small">En eth1 (red 1):</text>
+  <rect x="130" y="35" width="200" height="30" class="f-l2"/><text x="230" y="55" text-anchor="middle" class="white mono">MAC pc1 → MAC r1-eth1</text>
+  <rect x="330" y="35" width="230" height="30" class="f-l3"/><text x="445" y="55" text-anchor="middle" class="white mono">10.0.1.10 → 10.0.2.10</text>
+  <rect x="560" y="35" width="90" height="30" class="f-l3" opacity="0.7"/><text x="605" y="55" text-anchor="middle" class="white mono">TTL 64</text>
+  <text x="10" y="115" class="small">En eth2 (red 2):</text>
+  <rect x="130" y="95" width="200" height="30" class="f-l2"/><text x="230" y="115" text-anchor="middle" class="white mono">MAC r1-eth2 → MAC pc2</text>
+  <rect x="330" y="95" width="230" height="30" class="f-l3"/><text x="445" y="115" text-anchor="middle" class="white mono">10.0.1.10 → 10.0.2.10</text>
+  <rect x="560" y="95" width="90" height="30" class="f-l3" opacity="0.7"/><text x="605" y="115" text-anchor="middle" class="white mono">TTL 63</text>
+  <text x="130" y="160" class="small">Capa 2: se reescribe en cada salto</text>
+  <text x="330" y="160" class="small">Capa 3: igual de punta a punta</text>
+  <text x="560" y="160" class="small">TTL baja 1 por router</text>
+</svg>
+</figure>
+
+<h3>Experimentos</h3>
+<div class="cmd"><span class="label">r1 y pc1</span><pre><span class="c"># 1) Apaga el reenvío: los pings se pierden en silencio</span>
+<span class="p">r1# </span>sysctl -w net.ipv4.ip_forward=0
+<span class="p">pc1# </span>ping -c 2 10.0.2.10
+<span class="p">r1# </span>sysctl -w net.ipv4.ip_forward=1
+<span class="c"># 2) Quita la puerta de enlace de pc2: pc1 envía, pero pc2 no sabe responder</span>
+<span class="p">pc2# </span>ip route del default
+<span class="p">pc1# </span>ping -c 2 10.0.2.10
+<span class="p">pc2# </span>ip route add default via 10.0.2.1
+<span class="c"># 3) Un equipo que no existe en la red 2: r1 responde "Destination Host Unreachable"</span>
+<span class="p">pc1# </span>ping -c 2 10.0.2.99
+<span class="c"># 4) Un ping con TTL=1: muere en r1, que avisa con "Time to live exceeded"</span>
+<span class="p">pc1# </span>ping -c 1 -t 1 10.0.2.10
+<span class="c"># 5) La tabla ARP de pc1 NO contiene a pc2, sino al router</span>
+<span class="p">pc1# </span>ip neigh</pre></div>
+<div class="ok"><p>Regla de oro: <strong>para un destino de otra red, la trama va a la MAC del router</strong> pero el paquete lleva la IP del destino final.</p></div>
+<p>Deja este laboratorio montado si vas a hacer después <a href="#firewall">el cortafuegos</a> o <a href="#vpn">la VPN</a>. Si no:</p>
+<div class="cmd"><span class="label">host · limpieza</span><pre><span class="p">$ </span>sudo ip netns del pc1
+<span class="p">$ </span>sudo ip netns del r1
+<span class="p">$ </span>sudo ip netns del pc2</pre></div>
+
+<!-- ============================================================ -->
+<h2 id="cadena">3.4 Varios routers en cadena</h2>
+<figure class="diagram">
+<svg viewBox="0 0 760 170" role="img" aria-label="pc1, r1, r2, r3 y pc2 en cadena">
+  <rect x="5" y="50" width="110" height="60" class="box" rx="8"/><text x="60" y="76" text-anchor="middle" class="title">pc1</text><text x="60" y="96" text-anchor="middle" class="mono small">10.0.1.10</text>
+  <rect x="165" y="50" width="110" height="60" class="box2" rx="8"/><text x="220" y="84" text-anchor="middle" class="title">r1</text>
+  <rect x="325" y="50" width="110" height="60" class="box2" rx="8"/><text x="380" y="84" text-anchor="middle" class="title">r2</text>
+  <rect x="485" y="50" width="110" height="60" class="box2" rx="8"/><text x="540" y="84" text-anchor="middle" class="title">r3</text>
+  <rect x="645" y="50" width="110" height="60" class="box" rx="8"/><text x="700" y="76" text-anchor="middle" class="title">pc2</text><text x="700" y="96" text-anchor="middle" class="mono small">10.0.2.10</text>
+  <line x1="115" y1="80" x2="165" y2="80" class="wire-l3"/><line x1="275" y1="80" x2="325" y2="80" class="wire-l3"/><line x1="435" y1="80" x2="485" y2="80" class="wire-l3"/><line x1="595" y1="80" x2="645" y2="80" class="wire-l3"/>
+  <text x="140" y="35" text-anchor="middle" class="mono small">10.0.1.0/24</text><text x="140" y="140" text-anchor="middle" class="mono small">.10 | .1</text>
+  <text x="300" y="35" text-anchor="middle" class="mono small">10.255.12.0/30</text><text x="300" y="140" text-anchor="middle" class="mono small">.1 | .2</text>
+  <text x="460" y="35" text-anchor="middle" class="mono small">10.255.23.0/30</text><text x="460" y="140" text-anchor="middle" class="mono small">.1 | .2</text>
+  <text x="620" y="35" text-anchor="middle" class="mono small">10.0.2.0/24</text><text x="620" y="140" text-anchor="middle" class="mono small">.1 | .10</text>
+  <text x="380" y="164" text-anchor="middle" class="small">En cada router: eth1 = lado izquierdo, eth2 = lado derecho</text>
+</svg>
+<figcaption>Laboratorio 3.4: tres routers en fila. Cada enlace entre routers es una red /30.</figcaption>
+</figure>
+<div class="table-wrap"><table>
+<tr><th>Equipo</th><th>eth0 / eth1</th><th>eth2</th><th>Rutas que necesita</th></tr>
+<tr><td>pc1</td><td>10.0.1.10/24</td><td>—</td><td>default via 10.0.1.1</td></tr>
+<tr><td>r1</td><td>10.0.1.1/24</td><td>10.255.12.1/30</td><td>10.0.2.0/24 y 10.255.23.0/30 via 10.255.12.2</td></tr>
+<tr><td>r2</td><td>10.255.12.2/30</td><td>10.255.23.1/30</td><td>10.0.1.0/24 via 10.255.12.1 · 10.0.2.0/24 via 10.255.23.2</td></tr>
+<tr><td>r3</td><td>10.255.23.2/30</td><td>10.0.2.1/24</td><td>10.0.1.0/24 y 10.255.12.0/30 via 10.255.23.1</td></tr>
+<tr><td>pc2</td><td>10.0.2.10/24</td><td>—</td><td>default via 10.0.2.1</td></tr>
+</table></div>
+<div class="cmd"><span class="label">host</span><pre><span class="p">$ </span>sudo ip netns add pc1
+<span class="p">$ </span>sudo ip netns add r1
+<span class="p">$ </span>sudo ip netns add r2
+<span class="p">$ </span>sudo ip netns add r3
+<span class="p">$ </span>sudo ip netns add pc2
+<span class="p">$ </span>sudo ip link add eth0 netns pc1 type veth peer name eth1 netns r1
+<span class="p">$ </span>sudo ip link add eth2 netns r1 type veth peer name eth1 netns r2
+<span class="p">$ </span>sudo ip link add eth2 netns r2 type veth peer name eth1 netns r3
+<span class="p">$ </span>sudo ip link add eth2 netns r3 type veth peer name eth0 netns pc2</pre></div>
+<div class="cmd"><span class="label">pc1</span><pre><span class="p">pc1# </span>ip link set lo up
+<span class="p">pc1# </span>ip link set eth0 up
+<span class="p">pc1# </span>ip addr add 10.0.1.10/24 dev eth0
+<span class="p">pc1# </span>ip route add default via 10.0.1.1</pre></div>
+<div class="cmd"><span class="label">r1</span><pre><span class="p">r1# </span>ip link set lo up
+<span class="p">r1# </span>ip link set eth1 up
+<span class="p">r1# </span>ip link set eth2 up
+<span class="p">r1# </span>ip addr add 10.0.1.1/24 dev eth1
+<span class="p">r1# </span>ip addr add 10.255.12.1/30 dev eth2
+<span class="p">r1# </span>sysctl -w net.ipv4.ip_forward=1
+<span class="p">r1# </span>ip route add 10.0.2.0/24 via 10.255.12.2
+<span class="p">r1# </span>ip route add 10.255.23.0/30 via 10.255.12.2</pre></div>
+<div class="cmd"><span class="label">r2</span><pre><span class="p">r2# </span>ip link set lo up
+<span class="p">r2# </span>ip link set eth1 up
+<span class="p">r2# </span>ip link set eth2 up
+<span class="p">r2# </span>ip addr add 10.255.12.2/30 dev eth1
+<span class="p">r2# </span>ip addr add 10.255.23.1/30 dev eth2
+<span class="p">r2# </span>sysctl -w net.ipv4.ip_forward=1
+<span class="p">r2# </span>ip route add 10.0.1.0/24 via 10.255.12.1
+<span class="p">r2# </span>ip route add 10.0.2.0/24 via 10.255.23.2</pre></div>
+<div class="cmd"><span class="label">r3</span><pre><span class="p">r3# </span>ip link set lo up
+<span class="p">r3# </span>ip link set eth1 up
+<span class="p">r3# </span>ip link set eth2 up
+<span class="p">r3# </span>ip addr add 10.255.23.2/30 dev eth1
+<span class="p">r3# </span>ip addr add 10.0.2.1/24 dev eth2
+<span class="p">r3# </span>sysctl -w net.ipv4.ip_forward=1
+<span class="p">r3# </span>ip route add 10.0.1.0/24 via 10.255.23.1
+<span class="p">r3# </span>ip route add 10.255.12.0/30 via 10.255.23.1</pre></div>
+<div class="cmd"><span class="label">pc2</span><pre><span class="p">pc2# </span>ip link set lo up
+<span class="p">pc2# </span>ip link set eth0 up
+<span class="p">pc2# </span>ip addr add 10.0.2.10/24 dev eth0
+<span class="p">pc2# </span>ip route add default via 10.0.2.1</pre></div>
+<h3>Comprobar el camino</h3>
+<div class="cmd"><span class="label">pc1</span><pre><span class="p">pc1# </span>ping -c 2 10.0.2.10
+<span class="c"># traceroute: manda paquetes con TTL 1, 2, 3… y cada router que lo descarta se delata</span>
+<span class="p">pc1# </span>traceroute -n 10.0.2.10
+<span class="c"># Variante con ICMP en lugar de UDP</span>
+<span class="p">pc1# </span>traceroute -n -I 10.0.2.10
+<span class="c"># tracepath además descubre la MTU del camino</span>
+<span class="p">pc1# </span>tracepath -n 10.0.2.10</pre></div>
+<pre class="out">traceroute to 10.0.2.10 (10.0.2.10), 30 hops max, 60 byte packets
+ 1  10.0.1.1     0.050 ms  0.012 ms  0.010 ms
+ 2  10.255.12.2  0.030 ms  0.015 ms  0.014 ms
+ 3  10.255.23.2  0.040 ms  0.020 ms  0.018 ms
+ 4  10.0.2.10    0.045 ms  0.022 ms  0.020 ms</pre>
+<figure class="diagram">
+<svg viewBox="0 0 760 200" role="img" aria-label="Cómo funciona traceroute">
+  <defs><marker id="ah3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="arrow-head"/></marker></defs>
+  <text x="60" y="20" text-anchor="middle" class="title">pc1</text><text x="220" y="20" text-anchor="middle" class="title">r1</text><text x="380" y="20" text-anchor="middle" class="title">r2</text><text x="540" y="20" text-anchor="middle" class="title">r3</text><text x="700" y="20" text-anchor="middle" class="title">pc2</text>
+  <line x1="60" y1="45" x2="215" y2="45" class="wire-l3" marker-end="url(#ah3)"/><text x="140" y="40" text-anchor="middle" class="mono small">TTL=1</text>
+  <line x1="215" y1="58" x2="65" y2="58" class="wire-l4 dash" marker-end="url(#ah3)"/><text x="140" y="74" text-anchor="middle" class="mono small">ICMP Time Exceeded de r1</text>
+  <line x1="60" y1="95" x2="375" y2="95" class="wire-l3" marker-end="url(#ah3)"/><text x="300" y="90" text-anchor="middle" class="mono small">TTL=2</text>
+  <line x1="375" y1="108" x2="65" y2="108" class="wire-l4 dash" marker-end="url(#ah3)"/><text x="220" y="124" text-anchor="middle" class="mono small">Time Exceeded de r2</text>
+  <line x1="60" y1="145" x2="535" y2="145" class="wire-l3" marker-end="url(#ah3)"/><text x="460" y="140" text-anchor="middle" class="mono small">TTL=3</text>
+  <line x1="60" y1="180" x2="695" y2="180" class="wire-l3" marker-end="url(#ah3)"/><text x="620" y="175" text-anchor="middle" class="mono small">TTL=4 → llega: responde</text>
+</svg>
+</figure>
+<h3>Experimento: el bucle de enrutamiento</h3>
+<p>Haz que r2 mande la red 10.0.2.0/24 de vuelta a r1. El paquete rebota entre r1 y r2 hasta que su TTL llega a 0.</p>
+<div class="cmd"><span class="label">r2 y pc1</span><pre><span class="p">r2# </span>ip route replace 10.0.2.0/24 via 10.255.12.1
+<span class="p">pc1# </span>ping -c 1 10.0.2.10
+<span class="p">pc1# </span>traceroute -n -m 10 10.0.2.10
+<span class="c"># Arreglarlo</span>
+<span class="p">r2# </span>ip route replace 10.0.2.0/24 via 10.255.23.2</pre></div>
+<h3>Resumir rutas (agregación)</h3>
+<p>En r1, en vez de dos rutas hacia la derecha, basta con una ruta por defecto (r1 es un "router de borde"):</p>
+<div class="cmd"><span class="label">r1</span><pre><span class="p">r1# </span>ip route del 10.0.2.0/24
+<span class="p">r1# </span>ip route del 10.255.23.0/30
+<span class="p">r1# </span>ip route add default via 10.255.12.2
+<span class="p">r1# </span>ip route</pre></div>
+<div class="cmd"><span class="label">host · limpieza</span><pre><span class="p">$ </span>sudo ip netns del pc1
+<span class="p">$ </span>sudo ip netns del r1
+<span class="p">$ </span>sudo ip netns del r2
+<span class="p">$ </span>sudo ip netns del r3
+<span class="p">$ </span>sudo ip netns del pc2</pre></div>
+
+<!-- ============================================================ -->
+<h2 id="malla">3.5 Routers en red (malla) con caminos alternativos</h2>
+<p>Ahora tres routers unidos en triángulo, cada uno con su LAN. Si cae un enlace, el tráfico puede dar la vuelta por el otro lado.</p>
+<figure class="diagram">
+<svg viewBox="0 0 760 330" role="img" aria-label="Tres routers en triángulo con tres LAN">
+  <rect x="300" y="20" width="160" height="60" class="box2" rx="8"/><text x="380" y="46" text-anchor="middle" class="title">r1</text><text x="380" y="66" text-anchor="middle" class="mono small">lan 10.0.1.1/24</text>
+  <rect x="80" y="210" width="160" height="60" class="box2" rx="8"/><text x="160" y="236" text-anchor="middle" class="title">r2</text><text x="160" y="256" text-anchor="middle" class="mono small">lan 10.0.2.1/24</text>
+  <rect x="520" y="210" width="160" height="60" class="box2" rx="8"/><text x="600" y="236" text-anchor="middle" class="title">r3</text><text x="600" y="256" text-anchor="middle" class="mono small">lan 10.0.3.1/24</text>
+  <line x1="320" y1="80" x2="180" y2="210" class="wire-l3"/><text x="200" y="140" class="mono small">10.255.12.0/30</text><text x="250" y="160" class="mono small">.1 r1 · .2 r2</text>
+  <line x1="440" y1="80" x2="580" y2="210" class="wire-l3"/><text x="500" y="140" class="mono small">10.255.13.0/30</text><text x="450" y="160" class="mono small">.1 r1 · .2 r3</text>
+  <line x1="240" y1="240" x2="520" y2="240" class="wire-l3"/><text x="380" y="232" text-anchor="middle" class="mono small">10.255.23.0/30 (.1 r2 · .2 r3)</text>
+  <rect x="330" y="0" width="0" height="0"/>
+  <rect x="580" y="20" width="150" height="50" class="box" rx="8"/><text x="655" y="42" text-anchor="middle">pcA</text><text x="655" y="60" text-anchor="middle" class="mono small">10.0.1.10</text>
+  <line x1="460" y1="50" x2="580" y2="45" class="wire"/>
+  <rect x="20" y="290" width="150" height="36" class="box" rx="8"/><text x="95" y="313" text-anchor="middle">pcB 10.0.2.10</text>
+  <line x1="130" y1="270" x2="100" y2="290" class="wire"/>
+  <rect x="590" y="290" width="150" height="36" class="box" rx="8"/><text x="665" y="313" text-anchor="middle">pcC 10.0.3.10</text>
+  <line x1="630" y1="270" x2="660" y2="290" class="wire"/>
+</svg>
+<figcaption>Laboratorio 3.5. Interfaces de cada router: <code>lan</code>, <code>to-r1</code>, <code>to-r2</code>, <code>to-r3</code>.</figcaption>
+</figure>
+<div class="cmd"><span class="label">host</span><pre><span class="p">$ </span>sudo ip netns add r1
+<span class="p">$ </span>sudo ip netns add r2
+<span class="p">$ </span>sudo ip netns add r3
+<span class="p">$ </span>sudo ip netns add pcA
+<span class="p">$ </span>sudo ip netns add pcB
+<span class="p">$ </span>sudo ip netns add pcC
+<span class="c"># Enlaces entre routers</span>
+<span class="p">$ </span>sudo ip link add to-r2 netns r1 type veth peer name to-r1 netns r2
+<span class="p">$ </span>sudo ip link add to-r3 netns r1 type veth peer name to-r1 netns r3
+<span class="p">$ </span>sudo ip link add to-r3 netns r2 type veth peer name to-r2 netns r3
+<span class="c"># Cada LAN (un PC por router)</span>
+<span class="p">$ </span>sudo ip link add lan netns r1 type veth peer name eth0 netns pcA
+<span class="p">$ </span>sudo ip link add lan netns r2 type veth peer name eth0 netns pcB
+<span class="p">$ </span>sudo ip link add lan netns r3 type veth peer name eth0 netns pcC</pre></div>
+<p>Rutas: cada router tiene una ruta <strong>principal</strong> (directa, <code>metric 10</code>) y otra de <strong>respaldo</strong> (dando la vuelta, <code>metric 20</code>) para cada LAN remota. Con <code>ignore_routes_with_linkdown</code> el kernel deja de usar rutas cuyo cable está caído.</p>
+<div class="cmd"><span class="label">r1</span><pre><span class="p">r1# </span>ip link set lo up
+<span class="p">r1# </span>ip link set lan up
+<span class="p">r1# </span>ip link set to-r2 up
+<span class="p">r1# </span>ip link set to-r3 up
+<span class="p">r1# </span>ip addr add 10.0.1.1/24 dev lan
+<span class="p">r1# </span>ip addr add 10.255.12.1/30 dev to-r2
+<span class="p">r1# </span>ip addr add 10.255.13.1/30 dev to-r3
+<span class="p">r1# </span>sysctl -w net.ipv4.ip_forward=1
+<span class="p">r1# </span>sysctl -w net.ipv4.conf.all.ignore_routes_with_linkdown=1
+<span class="p">r1# </span>ip route add 10.0.2.0/24 via 10.255.12.2 metric 10
+<span class="p">r1# </span>ip route add 10.0.2.0/24 via 10.255.13.2 metric 20
+<span class="p">r1# </span>ip route add 10.0.3.0/24 via 10.255.13.2 metric 10
+<span class="p">r1# </span>ip route add 10.0.3.0/24 via 10.255.12.2 metric 20</pre></div>
+<div class="cmd"><span class="label">r2</span><pre><span class="p">r2# </span>ip link set lo up
+<span class="p">r2# </span>ip link set lan up
+<span class="p">r2# </span>ip link set to-r1 up
+<span class="p">r2# </span>ip link set to-r3 up
+<span class="p">r2# </span>ip addr add 10.0.2.1/24 dev lan
+<span class="p">r2# </span>ip addr add 10.255.12.2/30 dev to-r1
+<span class="p">r2# </span>ip addr add 10.255.23.1/30 dev to-r3
+<span class="p">r2# </span>sysctl -w net.ipv4.ip_forward=1
+<span class="p">r2# </span>sysctl -w net.ipv4.conf.all.ignore_routes_with_linkdown=1
+<span class="p">r2# </span>ip route add 10.0.1.0/24 via 10.255.12.1 metric 10
+<span class="p">r2# </span>ip route add 10.0.1.0/24 via 10.255.23.2 metric 20
+<span class="p">r2# </span>ip route add 10.0.3.0/24 via 10.255.23.2 metric 10
+<span class="p">r2# </span>ip route add 10.0.3.0/24 via 10.255.12.1 metric 20</pre></div>
+<div class="cmd"><span class="label">r3</span><pre><span class="p">r3# </span>ip link set lo up
+<span class="p">r3# </span>ip link set lan up
+<span class="p">r3# </span>ip link set to-r1 up
+<span class="p">r3# </span>ip link set to-r2 up
+<span class="p">r3# </span>ip addr add 10.0.3.1/24 dev lan
+<span class="p">r3# </span>ip addr add 10.255.13.2/30 dev to-r1
+<span class="p">r3# </span>ip addr add 10.255.23.2/30 dev to-r2
+<span class="p">r3# </span>sysctl -w net.ipv4.ip_forward=1
+<span class="p">r3# </span>sysctl -w net.ipv4.conf.all.ignore_routes_with_linkdown=1
+<span class="p">r3# </span>ip route add 10.0.1.0/24 via 10.255.13.1 metric 10
+<span class="p">r3# </span>ip route add 10.0.1.0/24 via 10.255.23.1 metric 20
+<span class="p">r3# </span>ip route add 10.0.2.0/24 via 10.255.23.1 metric 10
+<span class="p">r3# </span>ip route add 10.0.2.0/24 via 10.255.13.1 metric 20</pre></div>
+<div class="cmd"><span class="label">pcA, pcB, pcC</span><pre><span class="p">pcA# </span>ip link set eth0 up
+<span class="p">pcA# </span>ip addr add 10.0.1.10/24 dev eth0
+<span class="p">pcA# </span>ip route add default via 10.0.1.1
+<span class="p">pcB# </span>ip link set eth0 up
+<span class="p">pcB# </span>ip addr add 10.0.2.10/24 dev eth0
+<span class="p">pcB# </span>ip route add default via 10.0.2.1
+<span class="p">pcC# </span>ip link set eth0 up
+<span class="p">pcC# </span>ip addr add 10.0.3.10/24 dev eth0
+<span class="p">pcC# </span>ip route add default via 10.0.3.1</pre></div>
+<h3>Probar y provocar una avería</h3>
+<div class="cmd"><span class="label">pcA / r1 / r2</span><pre><span class="p">pcA# </span>traceroute -n 10.0.2.10
+<span class="c"># Dejamos un ping continuo en pcA (Ctrl+C para parar)</span>
+<span class="p">pcA# </span>ping 10.0.2.10
+<span class="c"># En otra terminal "cortamos el cable" r1–r2</span>
+<span class="p">r2# </span>ip link set to-r1 down
+<span class="c"># r1 marca la ruta como linkdown y usa la de respaldo</span>
+<span class="p">r1# </span>ip route
+<span class="p">pcA# </span>traceroute -n 10.0.2.10
+<span class="c"># Reparar</span>
+<span class="p">r2# </span>ip link set to-r1 up</pre></div>
+<pre class="out">10.0.2.0/24 via 10.255.12.2 dev to-r2 metric 10 linkdown
+10.0.2.0/24 via 10.255.13.2 dev to-r3 metric 20</pre>
+<p>Ahora el traceroute pasa por r1 → r3 → r2. Ojo: si en vez de cortar el cable "rompes" el router de otra forma (por ejemplo, <code>ip_forward=0</code>), el enlace sigue arriba y las rutas estáticas no se enteran. Para eso existen los <strong>protocolos de enrutamiento dinámico</strong>.</p>
+
+<h3>Enrutamiento dinámico con OSPF (BIRD)</h3>
+<p>Con OSPF los routers se descubren, intercambian sus redes y recalculan caminos solos. Arch trae <code>bird</code> en los repositorios oficiales: <code>sudo pacman -S bird</code>. Primero borra las rutas estáticas de los tres routers (las rutas puestas a mano con <code>ip route add</code> llevan <code>proto boot</code>), o recrea el laboratorio sin el paso de rutas.</p>
+<div class="cmd"><span class="label">r1 (repite en r2 y r3)</span><pre><span class="p">r1# </span>ip route flush proto boot</pre></div>
+<p>Crea un fichero de configuración por router, por ejemplo <code>/etc/bird-r1.conf</code> (en r2 y r3 cambia solo el <code>router id</code>):</p>
+<div class="cmd"><span class="label">/etc/bird-r1.conf</span><pre>router id 1.1.1.1;
+
+protocol device { }
+
+protocol kernel {
+  ipv4 { export all; };
+}
+
+protocol ospf v2 {
+  ipv4 { import all; };
+  area 0 {
+    interface "to-*" { type ptp; cost 10; hello 2; dead 8; };
+    interface "lan" { stub yes; };
+  };
+}</pre></div>
+<div class="cmd"><span class="label">r1, r2, r3 (cada uno con su fichero y su socket)</span><pre><span class="p">r1# </span>bird -c /etc/bird-r1.conf -s /run/bird-r1.ctl
+<span class="p">r2# </span>bird -c /etc/bird-r2.conf -s /run/bird-r2.ctl
+<span class="p">r3# </span>bird -c /etc/bird-r3.conf -s /run/bird-r3.ctl
+<span class="c"># Consultar vecinos y rutas aprendidas</span>
+<span class="p">r1# </span>birdc -s /run/bird-r1.ctl show ospf neighbors
+<span class="p">r1# </span>birdc -s /run/bird-r1.ctl show route
+<span class="p">r1# </span>ip route show proto bird</pre></div>
+<p>Repite el experimento de cortar <code>r1–r2</code>: en unos segundos (<code>dead 8</code>) OSPF reconverge y el tráfico va por r3. Para parar BIRD: <code>birdc -s /run/bird-r1.ctl down</code>.</p>
+<div class="table-wrap"><table>
+<tr><th></th><th>Rutas estáticas</th><th>Dinámico (OSPF, BGP, RIP)</th></tr>
+<tr><td>Configuración</td><td>A mano en cada router</td><td>Se anuncian solas</td></tr>
+<tr><td>Ante averías</td><td>Solo si cae el enlace físico</td><td>Detecta vecinos caídos y recalcula</td></tr>
+<tr><td>Escala</td><td>Redes pequeñas</td><td>Desde decenas a Internet entera (BGP)</td></tr>
+<tr><td>Riesgo</td><td>Errores humanos, bucles</td><td>Más complejidad, hay que proteger los anuncios</td></tr>
+</table></div>
+<div class="cmd"><span class="label">host · limpieza</span><pre><span class="p">$ </span>sudo ip netns del r1
+<span class="p">$ </span>sudo ip netns del r2
+<span class="p">$ </span>sudo ip netns del r3
+<span class="p">$ </span>sudo ip netns del pcA
+<span class="p">$ </span>sudo ip netns del pcB
+<span class="p">$ </span>sudo ip netns del pcC</pre></div>
+<div class="note"><p>Al borrar un namespace, los procesos que siguen dentro (como <code>bird</code>) no mueren solos. Páralos antes con <code>birdc … down</code>, o búscalos con <code>sudo ip netns pids r1</code> y termínalos con <code>sudo kill PID</code>.</p></div>
+
+<!-- ============================================================ -->
+<h2 id="icmp">3.6 Paquetes IP e ICMP a bajo nivel</h2>
+<p>En la capa 2 usábamos <code>sendp</code>/<code>srp1</code> y escribíamos la cabecera Ethernet. En capa 3 usamos <code>send</code>/<code>sr1</code>: escribimos desde IP hacia arriba y <strong>el kernel se encarga de la ruta y del ARP</strong>. Monta de nuevo el laboratorio de <a href="#cadena">routers en cadena</a> (3.4).</p>
+<div class="cmd"><span class="label">pc1</span><pre><span class="p">pc1# </span>scapy</pre></div>
+<div class="cmd"><span class="label">scapy en pc1</span><pre><span class="c"># Un ping a pc2 escrito a mano, enviado en capa 3</span>
+<span class="p">&gt;&gt;&gt; </span>p = IP(dst="10.0.2.10", ttl=64) / ICMP(id=1, seq=1) / b"hola capa 3"
+<span class="p">&gt;&gt;&gt; </span>r = sr1(p, timeout=2)
+<span class="p">&gt;&gt;&gt; </span>r.show()
+<span class="p">&gt;&gt;&gt; </span>r[IP].ttl</pre></div>
+<p>El TTL de la respuesta es 61: pc2 la envió con 64 y la restaron r3, r2 y r1.</p>
+<h3>Un traceroute escrito a mano</h3>
+<div class="cmd"><span class="label">scapy en pc1</span><pre><span class="p">&gt;&gt;&gt; </span>sr1(IP(dst="10.0.2.10", ttl=1)/ICMP(), timeout=2).src
+<span class="p">&gt;&gt;&gt; </span>sr1(IP(dst="10.0.2.10", ttl=2)/ICMP(), timeout=2).src
+<span class="p">&gt;&gt;&gt; </span>sr1(IP(dst="10.0.2.10", ttl=3)/ICMP(), timeout=2).src
+<span class="p">&gt;&gt;&gt; </span>sr1(IP(dst="10.0.2.10", ttl=4)/ICMP(), timeout=2).src
+<span class="c"># Mira el tipo de cada respuesta: 11 = Time Exceeded, 0 = Echo Reply</span>
+<span class="p">&gt;&gt;&gt; </span>sr1(IP(dst="10.0.2.10", ttl=2)/ICMP(), timeout=2)[ICMP].type</pre></div>
+<pre class="out">'10.0.1.1'
+'10.255.12.2'
+'10.255.23.2'
+'10.0.2.10'
+11</pre>
+<h3>Otros mensajes ICMP</h3>
+<div class="cmd"><span class="label">scapy en pc1</span><pre><span class="c"># A una red que no existe en r1 → Destination Unreachable (tipo 3), code 0 (red)</span>
+<span class="p">&gt;&gt;&gt; </span>r = sr1(IP(dst="10.9.9.9")/ICMP(), timeout=2)
+<span class="c"># Paquete UDP a un puerto cerrado de pc2 → tipo 3, code 3 (puerto inalcanzable)</span>
+<span class="p">&gt;&gt;&gt; </span>r = sr1(IP(dst="10.0.2.10")/UDP(dport=33333), timeout=2)
+<span class="p">&gt;&gt;&gt; </span>r[ICMP].type, r[ICMP].code
+<span class="c"># Petición de marca de tiempo (timestamp)</span>
+<span class="p">&gt;&gt;&gt; </span>sr1(IP(dst="10.0.2.10")/ICMP(type=13), timeout=2).show()</pre></div>
+<div class="note"><p>Contesta el primer router que no tiene ruta hacia <code>10.9.9.9</code>: mira <code>r.src</code>. Si hiciste la "agregación" de 3.4, r1 lo manda a r2 y es r2 quien responde. Puedes forzar el mensaje en un router con una ruta explícita: <code>ip route add unreachable 10.9.0.0/16</code> (o <code>prohibit</code>, o <code>blackhole</code> para tirarlo en silencio).</p></div>
+<div class="table-wrap"><table>
+<tr><th>Tipo</th><th>Código</th><th>Nombre</th><th>Cuándo aparece</th></tr>
+<tr><td>0</td><td>0</td><td>Echo Reply</td><td>Respuesta a ping</td></tr>
+<tr><td>3</td><td>0</td><td>Net Unreachable</td><td>El router no tiene ruta</td></tr>
+<tr><td>3</td><td>1</td><td>Host Unreachable</td><td>Nadie responde al ARP en la red final</td></tr>
+<tr><td>3</td><td>3</td><td>Port Unreachable</td><td>UDP a un puerto cerrado</td></tr>
+<tr><td>3</td><td>4</td><td>Fragmentation Needed</td><td>Paquete con DF mayor que la MTU (Path MTU Discovery)</td></tr>
+<tr><td>3</td><td>13</td><td>Administratively Prohibited</td><td>Cortafuegos con <code>REJECT --reject-with icmp-admin-prohibited</code></td></tr>
+<tr><td>5</td><td>0-3</td><td>Redirect</td><td>"Hay un router mejor en tu misma red"</td></tr>
+<tr><td>8</td><td>0</td><td>Echo Request</td><td>Ping</td></tr>
+<tr><td>11</td><td>0</td><td>Time Exceeded</td><td>TTL llegó a 0 (traceroute)</td></tr>
+</table></div>
+<h3>Fragmentación</h3>
+<div class="cmd"><span class="label">r2 y pc1</span><pre><span class="c"># Reducimos la MTU del enlace r2–r3 a 600 bytes</span>
+<span class="p">r2# </span>ip link set eth2 mtu 600
+<span class="p">r3# </span>ip link set eth1 mtu 600
+<span class="c"># Mirar el enlace estrecho</span>
+<span class="p">r3# </span>tcpdump -i eth1 -n -v icmp
+<span class="c"># Ping grande que permite fragmentar: r2 lo trocea</span>
+<span class="p">pc1# </span>ping -c 1 -s 1400 -M dont 10.0.2.10
+<span class="c"># Ping grande con DF (no fragmentar): r2 devuelve "Frag needed and DF set (mtu = 600)"</span>
+<span class="p">pc1# </span>ping -c 1 -s 1400 -M do 10.0.2.10</pre></div>
+<p>En tcpdump verás <code>flags [+]</code> (más fragmentos), <code>offset</code> y el mismo <code>id</code> en todos los trozos. Con scapy puedes fragmentar tú: <code>send(fragment(IP(dst="10.0.2.10")/ICMP()/(b"X"*1400), fragsize=500))</code>.</p>
+
+<!-- ============================================================ -->
+<h2 id="servicios">3.7 Una LAN con servidores: DHCP, DNS y web</h2>
+<p>Montamos una oficina: un switch, un servidor <code>srv</code> que da DHCP, DNS y web, y dos clientes que se configuran solos.</p>
+<figure class="diagram">
+<svg viewBox="0 0 760 260" role="img" aria-label="LAN con servidor DHCP, DNS y web">
+  <rect x="300" y="20" width="160" height="50" class="box2" rx="8"/><text x="380" y="50" text-anchor="middle" class="title">sw (br0)</text>
+  <rect x="20" y="150" width="230" height="90" class="box" rx="8"/><text x="135" y="176" text-anchor="middle" class="title">srv 10.0.10.1</text>
+  <text x="135" y="198" text-anchor="middle" class="small">dnsmasq: DHCP (UDP 67) + DNS (53)</text><text x="135" y="218" text-anchor="middle" class="small">python http.server (TCP 80)</text>
+  <rect x="300" y="160" width="160" height="70" class="box" rx="8"/><text x="380" y="190" text-anchor="middle" class="title">cli1</text><text x="380" y="210" text-anchor="middle" class="mono small">IP por DHCP</text>
+  <rect x="510" y="160" width="160" height="70" class="box" rx="8"/><text x="590" y="190" text-anchor="middle" class="title">cli2</text><text x="590" y="210" text-anchor="middle" class="mono small">IP por DHCP</text>
+  <line x1="330" y1="70" x2="135" y2="150" class="wire-l3"/><line x1="380" y1="70" x2="380" y2="160" class="wire-l3"/><line x1="430" y1="70" x2="590" y2="160" class="wire-l3"/>
+  <text x="560" y="100" class="small">red 10.0.10.0/24</text>
+</svg>
+</figure>
+<div class="cmd"><span class="label">host</span><pre><span class="p">$ </span>sudo ip netns add sw
+<span class="p">$ </span>sudo ip netns add srv
+<span class="p">$ </span>sudo ip netns add cli1
+<span class="p">$ </span>sudo ip netns add cli2
+<span class="p">$ </span>sudo ip link add eth0 netns srv type veth peer name p-srv netns sw
+<span class="p">$ </span>sudo ip link add eth0 netns cli1 type veth peer name p-cli1 netns sw
+<span class="p">$ </span>sudo ip link add eth0 netns cli2 type veth peer name p-cli2 netns sw
+<span class="c"># resolv.conf propio para cada cliente: ip netns exec lo monta sobre /etc/resolv.conf</span>
+<span class="p">$ </span>sudo mkdir -p /etc/netns/cli1 /etc/netns/cli2
+<span class="p">$ </span>sudo touch /etc/netns/cli1/resolv.conf /etc/netns/cli2/resolv.conf</pre></div>
+<div class="warn"><p>Este último paso es importante: sin él, el cliente DHCP de dentro del namespace escribiría en el <code>/etc/resolv.conf</code> real de tu Arch. Con el fichero en <code>/etc/netns/NOMBRE/</code>, cada namespace ve el suyo. (Si ya tenías una terminal abierta en cli1, ciérrala y vuelve a entrar.)</p></div>
+<div class="cmd"><span class="label">sw</span><pre><span class="p">sw# </span>ip link add br0 type bridge
+<span class="p">sw# </span>ip link set br0 up
+<span class="p">sw# </span>ip link set p-srv master br0
+<span class="p">sw# </span>ip link set p-cli1 master br0
+<span class="p">sw# </span>ip link set p-cli2 master br0
+<span class="p">sw# </span>ip link set p-srv up
+<span class="p">sw# </span>ip link set p-cli1 up
+<span class="p">sw# </span>ip link set p-cli2 up</pre></div>
+<h3>El servidor</h3>
+<div class="cmd"><span class="label">srv</span><pre><span class="p">srv# </span>ip link set lo up
+<span class="p">srv# </span>ip link set eth0 up
+<span class="p">srv# </span>ip addr add 10.0.10.1/24 dev eth0
+<span class="c"># Una web sencilla</span>
+<span class="p">srv# </span>mkdir -p /tmp/lab-web
+<span class="p">srv# </span>echo "&lt;h1&gt;Hola desde srv&lt;/h1&gt;" &gt; /tmp/lab-web/index.html
+<span class="p">srv# </span>python -m http.server 80 --bind 10.0.10.1 --directory /tmp/lab-web</pre></div>
+<p>En <strong>otra terminal de srv</strong>, arranca dnsmasq en primer plano (para ver sus mensajes). Cada opción explicada abajo:</p>
+<div class="cmd"><span class="label">srv · terminal 2</span><pre><span class="p">srv# </span>dnsmasq --no-daemon --interface=eth0 --bind-interfaces --no-resolv --no-hosts --pid-file= --dhcp-leasefile=/tmp/lab-dnsmasq.leases --dhcp-range=10.0.10.100,10.0.10.150,255.255.255.0,1h --dhcp-option=option:router,10.0.10.1 --dhcp-option=option:dns-server,10.0.10.1 --domain=lab --host-record=srv.lab,10.0.10.1 --address=/web.lab/10.0.10.1 --dhcp-host=02:00:00:00:00:c2,10.0.10.50,cli2 --log-dhcp --log-queries</pre></div>
+<div class="table-wrap"><table>
+<tr><th>Opción</th><th>Para qué</th></tr>
+<tr><td><code>--no-daemon</code></td><td>Primer plano, con logs en pantalla</td></tr>
+<tr><td><code>--interface=eth0 --bind-interfaces</code></td><td>Escuchar solo en eth0</td></tr>
+<tr><td><code>--no-resolv --no-hosts</code></td><td>No leer el resolv.conf ni /etc/hosts del host: solo responde lo que le digamos</td></tr>
+<tr><td><code>--pid-file=</code> y <code>--dhcp-leasefile=</code></td><td>No pisar los ficheros de un dnsmasq real del host</td></tr>
+<tr><td><code>--dhcp-range=inicio,fin,máscara,tiempo</code></td><td>Rango de IPs a repartir y duración del préstamo (lease)</td></tr>
+<tr><td><code>--dhcp-option=option:router,…</code></td><td>Puerta de enlace que se entrega (opción 3)</td></tr>
+<tr><td><code>--dhcp-option=option:dns-server,…</code></td><td>Servidor DNS que se entrega (opción 6)</td></tr>
+<tr><td><code>--host-record</code> / <code>--address</code></td><td>Registros DNS: nombre → IP</td></tr>
+<tr><td><code>--dhcp-host=MAC,IP,nombre</code></td><td>Reserva: esa MAC siempre recibe esa IP</td></tr>
+<tr><td><code>--log-dhcp --log-queries</code></td><td>Ver cada paso DHCP y cada consulta DNS</td></tr>
+</table></div>
+
+<h3>DHCP: el proceso DORA</h3>
+<figure class="diagram">
+<svg viewBox="0 0 760 270" role="img" aria-label="Intercambio DHCP DORA">
+  <defs><marker id="ah4" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="arrow-head"/></marker></defs>
+  <rect x="70" y="10" width="160" height="30" class="box" rx="6"/><text x="150" y="30" text-anchor="middle" class="title">cli1 (0.0.0.0)</text>
+  <rect x="530" y="10" width="160" height="30" class="box" rx="6"/><text x="610" y="30" text-anchor="middle" class="title">srv (10.0.10.1)</text>
+  <line x1="150" y1="40" x2="150" y2="260" class="wire dash"/><line x1="610" y1="40" x2="610" y2="260" class="wire dash"/>
+  <line x1="150" y1="70" x2="608" y2="85" class="wire-l3" marker-end="url(#ah4)"/><text x="380" y="68" text-anchor="middle" class="mono">D · DISCOVER  0.0.0.0:68 → 255.255.255.255:67</text>
+  <line x1="610" y1="120" x2="152" y2="135" class="wire-l3" marker-end="url(#ah4)"/><text x="380" y="118" text-anchor="middle" class="mono">O · OFFER  "te ofrezco 10.0.10.1xx"</text>
+  <line x1="150" y1="170" x2="608" y2="185" class="wire-l3" marker-end="url(#ah4)"/><text x="380" y="168" text-anchor="middle" class="mono">R · REQUEST  (broadcast) "quiero esa IP"</text>
+  <line x1="610" y1="220" x2="152" y2="235" class="wire-l3" marker-end="url(#ah4)"/><text x="380" y="218" text-anchor="middle" class="mono">A · ACK  IP + máscara + router + DNS + lease</text>
+</svg>
+<figcaption>Discover, Offer, Request, Ack. El cliente aún no tiene IP, por eso usa broadcast.</figcaption>
+</figure>
+<div class="cmd"><span class="label">cli1</span><pre><span class="p">cli1# </span>ip link set lo up
+<span class="p">cli1# </span>ip link set eth0 address 02:00:00:00:00:c1
+<span class="p">cli1# </span>ip link set eth0 up
+<span class="c"># Antes de pedir IP: ver la oferta sin aceptarla (nmap como "cliente espía")</span>
+<span class="p">cli1# </span>nmap --script broadcast-dhcp-discover -e eth0
+<span class="c"># Mirar el DORA mientras ocurre (otra terminal de cli1)</span>
+<span class="p">cli1# </span>tcpdump -i eth0 -n -v port 67 or port 68
+<span class="c"># Pedir IP: -4 solo IPv4, -1 configurar y salir, -C hostname no tocar el nombre del equipo</span>
+<span class="p">cli1# </span>dhcpcd -4 -1 -C hostname eth0
+<span class="p">cli1# </span>ip addr show eth0
+<span class="p">cli1# </span>ip route
+<span class="p">cli1# </span>cat /etc/resolv.conf</pre></div>
+<div class="note"><p>Con <code>-1</code> dhcpcd configura la interfaz y termina; la IP se queda puesta hasta que la quites con <code>ip addr flush dev eth0</code>. Sin <code>-1</code> se quedaría como demonio renovando el préstamo (y habría que pararlo con <code>dhcpcd -x eth0</code>). Los namespaces comparten el nombre de equipo con tu host: por eso desactivamos el hook <code>hostname</code>.</p></div>
+<div class="cmd"><span class="label">cli2 (tiene reserva → siempre 10.0.10.50)</span><pre><span class="p">cli2# </span>ip link set lo up
+<span class="p">cli2# </span>ip link set eth0 address 02:00:00:00:00:c2
+<span class="p">cli2# </span>ip link set eth0 up
+<span class="p">cli2# </span>dhcpcd -4 -1 -C hostname eth0
+<span class="p">cli2# </span>ip -br addr</pre></div>
+<div class="cmd"><span class="label">srv</span><pre><span class="c"># Préstamos concedidos: caducidad, MAC, IP, nombre</span>
+<span class="p">srv# </span>cat /tmp/lab-dnsmasq.leases</pre></div>
+
+<h3>DNS: nombres en lugar de IPs</h3>
+<div class="cmd"><span class="label">cli1</span><pre><span class="c"># Preguntar directamente al servidor</span>
+<span class="p">cli1# </span>dig @10.0.10.1 web.lab
+<span class="p">cli1# </span>dig @10.0.10.1 srv.lab +short
+<span class="c"># Resolución inversa (IP → nombre)</span>
+<span class="p">cli1# </span>dig @10.0.10.1 -x 10.0.10.1
+<span class="c"># Nombre que no existe: NXDOMAIN</span>
+<span class="p">cli1# </span>dig @10.0.10.1 noexiste.lab
+<span class="c"># Los nombres de los clientes DHCP se registran solos</span>
+<span class="p">cli1# </span>dig @10.0.10.1 cli2.lab +short
+<span class="c"># Usando el resolv.conf que dio DHCP (sin @servidor)</span>
+<span class="p">cli1# </span>ping -c 1 srv.lab</pre></div>
+<pre class="out">;; QUESTION SECTION:
+;web.lab.                       IN      A
+
+;; ANSWER SECTION:
+web.lab.                0       IN      A       10.0.10.1
+
+;; SERVER: 10.0.10.1#53(10.0.10.1) (UDP)</pre>
+
+<h3>Web</h3>
+<div class="cmd"><span class="label">cli1</span><pre><span class="p">cli1# </span>curl http://web.lab/
+<span class="c"># -v muestra la conversación HTTP completa</span>
+<span class="p">cli1# </span>curl -v http://web.lab/</pre></div>
+<p>Una sola orden <code>curl</code> pone en marcha toda la pila: DNS (UDP 53) para averiguar la IP, ARP para la MAC, TCP (handshake) al puerto 80 y finalmente HTTP. Mira el orden con <code>tcpdump -i eth0 -n</code> en cli1.</p>
+<p>Deja este laboratorio montado si vas a ver <a href="#firewall">el cortafuegos</a> o la <a href="capa5.html">capa de aplicación</a>; si no, limpia (pulsa Ctrl+C en dnsmasq y en el servidor web primero):</p>
+<div class="cmd"><span class="label">host · limpieza</span><pre><span class="p">$ </span>sudo ip netns del sw
+<span class="p">$ </span>sudo ip netns del srv
+<span class="p">$ </span>sudo ip netns del cli1
+<span class="p">$ </span>sudo ip netns del cli2
+<span class="p">$ </span>sudo rm -r /etc/netns/cli1 /etc/netns/cli2</pre></div>
+
+<!-- ============================================================ -->
+<h2 id="nat">3.8 NAT: una red privada saliendo a "Internet"</h2>
+<p>Las IPs privadas no se enrutan por Internet. El router de casa hace <strong>NAT</strong>: cambia la IP de origen privada por su IP pública al salir, y deshace el cambio en las respuestas.</p>
+<figure class="diagram">
+<svg viewBox="0 0 760 190" role="img" aria-label="NAT entre LAN privada e Internet simulada">
+  <rect x="10" y="50" width="170" height="80" class="box" rx="8"/><text x="95" y="78" text-anchor="middle" class="title">casa</text><text x="95" y="100" text-anchor="middle" class="mono small">192.168.1.10/24</text><text x="95" y="118" text-anchor="middle" class="mono small">gw .1</text>
+  <rect x="260" y="40" width="220" height="100" class="box2" rx="8"/><text x="370" y="66" text-anchor="middle" class="title">gw (router + NAT)</text><text x="370" y="88" text-anchor="middle" class="mono small">lan 192.168.1.1/24</text><text x="370" y="108" text-anchor="middle" class="mono small">wan 203.0.113.2/24</text><text x="370" y="128" text-anchor="middle" class="small">MASQUERADE</text>
+  <rect x="560" y="50" width="190" height="80" class="box" rx="8"/><text x="655" y="78" text-anchor="middle" class="title">internet</text><text x="655" y="100" text-anchor="middle" class="mono small">203.0.113.1/24</text><text x="655" y="118" text-anchor="middle" class="small">servidor "público"</text>
+  <line x1="180" y1="90" x2="260" y2="90" class="wire-l3"/><line x1="480" y1="90" x2="560" y2="90" class="wire-l3"/>
+  <text x="220" y="170" text-anchor="middle" class="mono small">src 192.168.1.10</text><text x="520" y="170" text-anchor="middle" class="mono small">src 203.0.113.2</text>
+</svg>
+</figure>
+<div class="cmd"><span class="label">host</span><pre><span class="p">$ </span>sudo ip netns add casa
+<span class="p">$ </span>sudo ip netns add gw
+<span class="p">$ </span>sudo ip netns add internet
+<span class="p">$ </span>sudo ip link add eth0 netns casa type veth peer name lan netns gw
+<span class="p">$ </span>sudo ip link add wan netns gw type veth peer name eth0 netns internet</pre></div>
+<div class="cmd"><span class="label">casa</span><pre><span class="p">casa# </span>ip link set lo up
+<span class="p">casa# </span>ip link set eth0 up
+<span class="p">casa# </span>ip addr add 192.168.1.10/24 dev eth0
+<span class="p">casa# </span>ip route add default via 192.168.1.1</pre></div>
+<div class="cmd"><span class="label">internet</span><pre><span class="c"># OJO: "internet" NO tiene ruta hacia 192.168.1.0/24, como en la vida real</span>
+<span class="p">internet# </span>ip link set lo up
+<span class="p">internet# </span>ip link set eth0 up
+<span class="p">internet# </span>ip addr add 203.0.113.1/24 dev eth0</pre></div>
+<div class="cmd"><span class="label">gw</span><pre><span class="p">gw# </span>ip link set lo up
+<span class="p">gw# </span>ip link set lan up
+<span class="p">gw# </span>ip link set wan up
+<span class="p">gw# </span>ip addr add 192.168.1.1/24 dev lan
+<span class="p">gw# </span>ip addr add 203.0.113.2/24 dev wan
+<span class="p">gw# </span>ip route add default via 203.0.113.1
+<span class="p">gw# </span>sysctl -w net.ipv4.ip_forward=1</pre></div>
+<div class="cmd"><span class="label">probar sin NAT</span><pre><span class="p">internet# </span>tcpdump -i eth0 -n icmp
+<span class="p">casa# </span>ping -c 2 203.0.113.1</pre></div>
+<p>Internet recibe los pings desde <code>192.168.1.10</code>, pero no sabe cómo volver a esa red privada: no hay respuesta. Activamos NAT:</p>
+<div class="cmd"><span class="label">gw</span><pre><span class="c"># Todo lo que salga por wan: cambia la IP origen por la de wan</span>
+<span class="p">gw# </span>iptables -t nat -A POSTROUTING -o wan -j MASQUERADE
+<span class="p">gw# </span>iptables -t nat -L -n -v</pre></div>
+<div class="cmd"><span class="label">probar con NAT</span><pre><span class="p">casa# </span>ping -c 2 203.0.113.1
+<span class="c"># La tabla de traducciones (connection tracking)</span>
+<span class="p">gw# </span>conntrack -L</pre></div>
+<pre class="out">icmp     1 29 src=192.168.1.10 dst=203.0.113.1 type=8 code=0 id=7 src=203.0.113.1 dst=203.0.113.2 type=0 code=0 id=7 mark=0 use=1</pre>
+<p>Cada línea de conntrack tiene dos mitades: el sentido original (lo que envió casa) y el sentido de respuesta esperado (lo que contestará internet, a la IP pública). Así gw sabe a quién devolver cada respuesta.</p>
+
+<h3>DNAT: abrir un puerto (port forwarding)</h3>
+<p>Al revés: que desde Internet se pueda llegar a un servicio de casa.</p>
+<div class="cmd"><span class="label">casa, gw, internet</span><pre><span class="c"># Servidor web en casa</span>
+<span class="p">casa# </span>python -m http.server 8000
+<span class="c"># En gw: lo que llegue al puerto 80 de wan → casa:8000</span>
+<span class="p">gw# </span>iptables -t nat -A PREROUTING -i wan -p tcp --dport 80 -j DNAT --to-destination 192.168.1.10:8000
+<span class="c"># Desde internet se accede a la IP pública del router</span>
+<span class="p">internet# </span>curl http://203.0.113.2/</pre></div>
+<div class="table-wrap"><table>
+<tr><th>Tipo</th><th>Cadena</th><th>Qué cambia</th><th>Ejemplo real</th></tr>
+<tr><td>SNAT / MASQUERADE</td><td>POSTROUTING</td><td>IP (y puerto) de <strong>origen</strong></td><td>Router de casa, CGNAT</td></tr>
+<tr><td>DNAT</td><td>PREROUTING</td><td>IP (y puerto) de <strong>destino</strong></td><td>Abrir puertos, balanceadores</td></tr>
+<tr><td>REDIRECT</td><td>PREROUTING / OUTPUT</td><td>Destino → el propio equipo</td><td>Proxy transparente</td></tr>
+</table></div>
+<div class="cmd"><span class="label">host · limpieza</span><pre><span class="p">$ </span>sudo ip netns del casa
+<span class="p">$ </span>sudo ip netns del gw
+<span class="p">$ </span>sudo ip netns del internet</pre></div>
+
+<details><summary>Extra: dar Internet real a un namespace</summary>
+<p>Esto <strong>sí toca tu host</strong> (activa el reenvío y añade una regla NAT), por eso está aparte. Sustituye <code>wlan0</code> por tu interfaz real (míralo con <code>ip route get 1.1.1.1</code>).</p>
+<div class="cmd"><span class="label">host</span><pre><span class="p">$ </span>sudo ip netns add salida
+<span class="p">$ </span>sudo ip link add veth-host type veth peer name eth0 netns salida
+<span class="p">$ </span>sudo ip addr add 172.31.0.1/30 dev veth-host
+<span class="p">$ </span>sudo ip link set veth-host up
+<span class="p">$ </span>sudo ip netns exec salida ip addr add 172.31.0.2/30 dev eth0
+<span class="p">$ </span>sudo ip netns exec salida ip link set eth0 up
+<span class="p">$ </span>sudo ip netns exec salida ip route add default via 172.31.0.1
+<span class="p">$ </span>sudo sysctl -w net.ipv4.ip_forward=1
+<span class="p">$ </span>sudo iptables -t nat -A POSTROUTING -s 172.31.0.0/30 -o wlan0 -j MASQUERADE
+<span class="p">$ </span>sudo mkdir -p /etc/netns/salida
+<span class="p">$ </span>echo "nameserver 1.1.1.1" | sudo tee /etc/netns/salida/resolv.conf
+<span class="p">$ </span>sudo ip netns exec salida curl -I https://archlinux.org</pre></div>
+<p>Si tienes un cortafuegos en el host (ufw, firewalld, nftables con política DROP en FORWARD) quizá debas permitir el reenvío. Para deshacerlo:</p>
+<div class="cmd"><span class="label">host · deshacer</span><pre><span class="p">$ </span>sudo iptables -t nat -D POSTROUTING -s 172.31.0.0/30 -o wlan0 -j MASQUERADE
+<span class="p">$ </span>sudo sysctl -w net.ipv4.ip_forward=0
+<span class="p">$ </span>sudo ip netns del salida
+<span class="p">$ </span>sudo rm -r /etc/netns/salida</pre></div>
+</details>
+
+<!-- ============================================================ -->
+<h2 id="firewall">3.9 Cortafuegos con iptables</h2>
+<p>Usamos el laboratorio del <a href="#router">router entre dos redes</a> (3.3): pc1 en 10.0.1.0/24 es la "LAN interna", pc2 en 10.0.2.0/24 es un "servidor en la DMZ". El cortafuegos vive en r1.</p>
+<h3>Cómo recorre un paquete netfilter</h3>
+<figure class="diagram">
+<svg viewBox="0 0 760 250" role="img" aria-label="Cadenas de netfilter">
+  <defs><marker id="ah5" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="arrow-head"/></marker></defs>
+  <text x="10" y="70" class="small">entra</text>
+  <line x1="40" y1="65" x2="88" y2="65" class="wire" marker-end="url(#ah5)"/>
+  <rect x="90" y="45" width="130" height="40" class="f-l3" rx="6"/><text x="155" y="70" text-anchor="middle" class="white">PREROUTING</text>
+  <line x1="220" y1="65" x2="268" y2="65" class="wire" marker-end="url(#ah5)"/>
+  <polygon points="270,65 320,40 370,65 320,90" class="box2"/><text x="320" y="62" text-anchor="middle" class="small">¿es para</text><text x="320" y="76" text-anchor="middle" class="small">mí?</text>
+  <line x1="370" y1="65" x2="438" y2="65" class="wire" marker-end="url(#ah5)"/><text x="400" y="58" class="small">no</text>
+  <rect x="440" y="45" width="120" height="40" class="f-l3" rx="6"/><text x="500" y="70" text-anchor="middle" class="white">FORWARD</text>
+  <line x1="560" y1="65" x2="598" y2="65" class="wire" marker-end="url(#ah5)"/>
+  <rect x="600" y="45" width="140" height="40" class="f-l3" rx="6"/><text x="670" y="70" text-anchor="middle" class="white">POSTROUTING</text>
+  <line x1="670" y1="85" x2="670" y2="230" class="wire" marker-end="url(#ah5)"/><text x="680" y="235" class="small">sale</text>
+  <line x1="320" y1="90" x2="320" y2="138" class="wire" marker-end="url(#ah5)"/><text x="328" y="115" class="small">sí</text>
+  <rect x="260" y="140" width="120" height="40" class="f-l4" rx="6"/><text x="320" y="165" text-anchor="middle" class="white">INPUT</text>
+  <line x1="320" y1="180" x2="320" y2="200" class="wire"/>
+  <rect x="250" y="200" width="140" height="36" class="box" rx="6"/><text x="320" y="223" text-anchor="middle">proceso local</text>
+  <line x1="390" y1="218" x2="438" y2="218" class="wire" marker-end="url(#ah5)"/>
+  <rect x="440" y="198" width="120" height="40" class="f-l4" rx="6"/><text x="500" y="223" text-anchor="middle" class="white">OUTPUT</text>
+  <line x1="560" y1="210" x2="665" y2="90" class="wire" marker-end="url(#ah5)"/>
+</svg>
+<figcaption>Un router filtra en <strong>FORWARD</strong>; un equipo se protege a sí mismo en <strong>INPUT</strong>. El NAT de destino ocurre en PREROUTING y el de origen en POSTROUTING.</figcaption>
+</figure>
+<div class="table-wrap"><table>
+<tr><th>Tabla</th><th>Para qué</th><th>Cadenas</th></tr>
+<tr><td><code>filter</code> (por defecto)</td><td>Permitir o bloquear</td><td>INPUT, FORWARD, OUTPUT</td></tr>
+<tr><td><code>nat</code></td><td>Traducir direcciones</td><td>PREROUTING, INPUT, OUTPUT, POSTROUTING</td></tr>
+<tr><td><code>mangle</code></td><td>Modificar campos (TTL, DSCP, marcas)</td><td>Todas</td></tr>
+<tr><td><code>raw</code></td><td>Excepciones al seguimiento de conexiones</td><td>PREROUTING, OUTPUT</td></tr>
+</table></div>
+<div class="table-wrap"><table>
+<tr><th>Acción (-j)</th><th>Efecto</th><th>Lo que ve el emisor</th></tr>
+<tr><td><code>ACCEPT</code></td><td>Deja pasar</td><td>Conexión normal</td></tr>
+<tr><td><code>DROP</code></td><td>Tira en silencio</td><td>Espera hasta que caduca (nmap: <em>filtered</em>)</td></tr>
+<tr><td><code>REJECT</code></td><td>Tira y avisa (ICMP o TCP RST)</td><td>Error inmediato (nmap: <em>closed</em> o <em>filtered</em> según el aviso)</td></tr>
+<tr><td><code>LOG</code></td><td>Escribe en el log del kernel y sigue evaluando</td><td>Nada</td></tr>
+</table></div>
+
+<h3>Servicios en pc2 para probar</h3>
+<div class="cmd"><span class="label">pc2 (tres terminales o en segundo plano)</span><pre><span class="p">pc2# </span>python -m http.server 80
+<span class="p">pc2# </span>nc -lk 22
+<span class="p">pc2# </span>nc -lk 3306</pre></div>
+
+<h3>Paso a paso: política "denegar por defecto"</h3>
+<div class="cmd"><span class="label">r1</span><pre><span class="c"># 1. Ver las reglas actuales (vacías, política ACCEPT)</span>
+<span class="p">r1# </span>iptables -L -n -v --line-numbers
+<span class="c"># 2. Política por defecto de FORWARD: tirar todo</span>
+<span class="p">r1# </span>iptables -P FORWARD DROP</pre></div>
+<p>Comprueba que ya nada pasa: <code>pc1# ping -c 2 10.0.2.10</code>. Ahora abrimos lo justo:</p>
+<div class="cmd"><span class="label">r1</span><pre><span class="c"># 3. Dejar pasar las respuestas de conexiones ya permitidas (cortafuegos con estado)</span>
+<span class="p">r1# </span>iptables -A FORWARD -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+<span class="c"># 4. Tirar paquetes inválidos</span>
+<span class="p">r1# </span>iptables -A FORWARD -m conntrack --ctstate INVALID -j DROP
+<span class="c"># 5. La LAN puede hacer ping a la DMZ</span>
+<span class="p">r1# </span>iptables -A FORWARD -i eth1 -o eth2 -p icmp --icmp-type echo-request -j ACCEPT
+<span class="c"># 6. La LAN puede ir a la web de pc2</span>
+<span class="p">r1# </span>iptables -A FORWARD -i eth1 -o eth2 -d 10.0.2.10 -p tcp --dport 80 -j ACCEPT
+<span class="c"># 7. SSH solo desde pc1 concreto</span>
+<span class="p">r1# </span>iptables -A FORWARD -s 10.0.1.10 -d 10.0.2.10 -p tcp --dport 22 -j ACCEPT
+<span class="c"># 8. A MySQL se le contesta "prohibido" en lugar de ignorar</span>
+<span class="p">r1# </span>iptables -A FORWARD -p tcp --dport 3306 -j REJECT --reject-with tcp-reset
+<span class="c"># 9. Registrar lo que se va a tirar (con límite para no llenar el log)</span>
+<span class="p">r1# </span>iptables -A FORWARD -m limit --limit 5/min -j LOG --log-prefix "FW-DROP: "
+<span class="p">r1# </span>iptables -L FORWARD -n -v --line-numbers</pre></div>
+<div class="cmd"><span class="label">pruebas desde pc1</span><pre><span class="p">pc1# </span>ping -c 1 10.0.2.10
+<span class="p">pc1# </span>curl http://10.0.2.10/
+<span class="p">pc1# </span>nc -vz 10.0.2.10 22
+<span class="c"># Rechazado al instante</span>
+<span class="p">pc1# </span>nc -vz 10.0.2.10 3306
+<span class="c"># Tirado: se queda esperando (-w 3 = máximo 3 s)</span>
+<span class="p">pc1# </span>nc -vz -w 3 10.0.2.10 8080
+<span class="c"># Desde la DMZ hacia la LAN: bloqueado (no hay regla de pc2 → pc1)</span>
+<span class="p">pc2# </span>ping -c 2 10.0.1.10</pre></div>
+<div class="cmd"><span class="label">host · ver los logs del kernel</span><pre><span class="c"># Por defecto el kernel ignora los LOG de namespaces que no son el principal. Actívalo:</span>
+<span class="p">$ </span>sudo sysctl -w net.netfilter.nf_log_all_netns=1
+<span class="p">$ </span>sudo dmesg -w | grep FW-DROP
+<span class="c"># o</span>
+<span class="p">$ </span>sudo journalctl -k -f | grep FW-DROP</pre></div>
+<div class="note"><p>Los namespaces comparten el log del kernel con el host; por eso los mensajes LOG se leen desde el host. Fíjate en los contadores <code>pkts</code>/<code>bytes</code> de <code>iptables -L -v</code>: suben con cada regla que se cumple, es la mejor herramienta para depurar.</p></div>
+
+<h3>Proteger el propio router (INPUT)</h3>
+<div class="cmd"><span class="label">r1</span><pre><span class="p">r1# </span>iptables -A INPUT -i lo -j ACCEPT
+<span class="p">r1# </span>iptables -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+<span class="p">r1# </span>iptables -A INPUT -p icmp -j ACCEPT
+<span class="p">r1# </span>iptables -A INPUT -s 10.0.1.0/24 -p tcp --dport 22 -j ACCEPT
+<span class="p">r1# </span>iptables -P INPUT DROP</pre></div>
+
+<h3>Más reglas útiles</h3>
+<div class="table-wrap"><table>
+<tr><th>Objetivo</th><th>Regla</th></tr>
+<tr><td>Limitar pings a 1 por segundo</td><td><code>iptables -I FORWARD 3 -p icmp -m limit --limit 1/s -j ACCEPT</code></td></tr>
+<tr><td>Varios puertos a la vez</td><td><code>iptables -A FORWARD -p tcp -m multiport --dports 80,443 -j ACCEPT</code></td></tr>
+<tr><td>Rango de IPs</td><td><code>iptables -A FORWARD -m iprange --src-range 10.0.1.10-10.0.1.20 -j ACCEPT</code></td></tr>
+<tr><td>Máximo de conexiones por IP</td><td><code>iptables -A FORWARD -p tcp --dport 80 -m connlimit --connlimit-above 10 -j REJECT</code></td></tr>
+<tr><td>Por MAC de origen</td><td><code>iptables -A FORWARD -m mac --mac-source 02:00:00:00:00:01 -j ACCEPT</code></td></tr>
+<tr><td>Por horario</td><td><code>iptables -A FORWARD -m time --timestart 09:00 --timestop 18:00 -j ACCEPT</code></td></tr>
+<tr><td>Insertar en posición 1</td><td><code>iptables -I FORWARD 1 …</code></td></tr>
+<tr><td>Borrar la regla nº 4</td><td><code>iptables -D FORWARD 4</code></td></tr>
+<tr><td>Vaciar una cadena</td><td><code>iptables -F FORWARD</code></td></tr>
+<tr><td>Guardar / restaurar</td><td><code>iptables-save &gt; /tmp/r1.rules</code> · <code>iptables-restore &lt; /tmp/r1.rules</code></td></tr>
+<tr><td>Cadena propia</td><td><code>iptables -N DMZ</code> · <code>iptables -A FORWARD -o eth2 -j DMZ</code></td></tr>
+</table></div>
+
+<h3>Lo mismo con nftables</h3>
+<p>En Arch, <code>iptables</code> ya traduce a nftables por debajo. Puedes ver la traducción con <code>nft list ruleset</code>. Escribir directamente en nft (en un namespace limpio):</p>
+<div class="cmd"><span class="label">r1</span><pre><span class="p">r1# </span>nft add table inet filtro
+<span class="p">r1# </span>nft add chain inet filtro forward '{ type filter hook forward priority 0; policy drop; }'
+<span class="p">r1# </span>nft add rule inet filtro forward ct state established,related accept
+<span class="p">r1# </span>nft add rule inet filtro forward iifname "eth1" tcp dport { 80, 443 } accept
+<span class="p">r1# </span>nft add rule inet filtro forward iifname "eth1" icmp type echo-request accept
+<span class="p">r1# </span>nft list ruleset</pre></div>
+<p>(<code>nft</code> viene en el paquete <code>nftables</code>.)</p>
+
+<!-- ============================================================ -->
+<h2 id="nmap">3.10 Explorar la red con nmap y tcpdump</h2>
+<p>nmap es la herramienta estándar para inventariar una red y auditar cortafuegos. Úsala solo en redes que sean tuyas o donde tengas permiso: aquí, en tu laboratorio. Con el cortafuegos de 3.9 puesto:</p>
+<div class="cmd"><span class="label">pc1</span><pre><span class="c"># ¿Qué equipos hay en mi red? (en la red local usa ARP)</span>
+<span class="p">pc1# </span>nmap -sn 10.0.1.0/24
+<span class="c"># ¿Y en la red de al lado? (usa ping y sondas TCP)</span>
+<span class="p">pc1# </span>nmap -sn 10.0.2.0/24
+<span class="c"># Escaneo de puertos SYN (por defecto con root): los 1000 más comunes</span>
+<span class="p">pc1# </span>nmap 10.0.2.10
+<span class="c"># Solo algunos puertos y razón de cada estado</span>
+<span class="p">pc1# </span>nmap -p 22,80,3306,8080 --reason 10.0.2.10
+<span class="c"># Detectar versión del servicio</span>
+<span class="p">pc1# </span>nmap -sV -p 80 10.0.2.10
+<span class="c"># Escaneo UDP (lento)</span>
+<span class="p">pc1# </span>nmap -sU -p 53,67,123 10.0.2.10
+<span class="c"># Ver cada paquete que envía nmap</span>
+<span class="p">pc1# </span>nmap -p 80 --packet-trace 10.0.2.10</pre></div>
+<pre class="out">PORT     STATE    SERVICE REASON
+22/tcp   open     ssh     syn-ack ttl 63
+80/tcp   open     http    syn-ack ttl 63
+3306/tcp closed   mysql   reset ttl 63
+8080/tcp filtered http-proxy no-response</pre>
+<div class="table-wrap"><table>
+<tr><th>Estado nmap</th><th>Qué recibió</th><th>Interpretación</th></tr>
+<tr><td><code>open</code></td><td>SYN-ACK</td><td>Hay un servicio escuchando</td></tr>
+<tr><td><code>closed</code></td><td>RST</td><td>El equipo responde pero no hay servicio (o un REJECT con tcp-reset)</td></tr>
+<tr><td><code>filtered</code></td><td>Nada, o ICMP unreachable</td><td>Un cortafuegos tira el paquete (DROP)</td></tr>
+<tr><td><code>open|filtered</code></td><td>Nada (UDP)</td><td>No se puede distinguir; típico en UDP</td></tr>
+</table></div>
+<div class="table-wrap"><table>
+<tr><th>Tipo de escaneo</th><th>Opción</th><th>Cómo funciona</th></tr>
+<tr><td>Descubrimiento</td><td><code>-sn</code></td><td>Sin puertos; ARP en LAN, ICMP + TCP 80/443 fuera</td></tr>
+<tr><td>SYN (medio abierto)</td><td><code>-sS</code></td><td>Envía SYN; si recibe SYN-ACK responde RST sin completar</td></tr>
+<tr><td>Connect</td><td><code>-sT</code></td><td>Handshake completo con el sistema operativo (sin root)</td></tr>
+<tr><td>UDP</td><td><code>-sU</code></td><td>Espera respuesta o ICMP port unreachable</td></tr>
+<tr><td>Versiones</td><td><code>-sV</code></td><td>Habla con el servicio para identificarlo</td></tr>
+<tr><td>Sistema operativo</td><td><code>-O</code></td><td>Huella de la pila TCP/IP</td></tr>
+</table></div>
+<p>Mira el escaneo desde el lado de la víctima para aprender a reconocerlo (muchos SYN a puertos distintos desde una misma IP):</p>
+<div class="cmd"><span class="label">pc2</span><pre><span class="p">pc2# </span>tcpdump -i eth0 -n 'tcp[tcpflags] &amp; tcp-syn != 0'</pre></div>
+<h3>Filtros de tcpdump más útiles</h3>
+<div class="table-wrap"><table>
+<tr><th>Filtro</th><th>Captura</th></tr>
+<tr><td><code>host 10.0.2.10</code></td><td>Todo lo que va o viene de esa IP</td></tr>
+<tr><td><code>src 10.0.1.10 and dst port 80</code></td><td>Combinaciones</td></tr>
+<tr><td><code>net 10.0.1.0/24</code></td><td>Una red</td></tr>
+<tr><td><code>arp</code>, <code>icmp</code>, <code>udp</code>, <code>tcp</code></td><td>Por protocolo</td></tr>
+<tr><td><code>port 53</code></td><td>DNS</td></tr>
+<tr><td><code>ether host 02:00:00:00:00:01</code></td><td>Por MAC</td></tr>
+<tr><td><code>'tcp[tcpflags] &amp; tcp-rst != 0'</code></td><td>Solo paquetes con RST</td></tr>
+<tr><td><code>not port 22</code></td><td>Excluir</td></tr>
+</table></div>
+<div class="table-wrap"><table>
+<tr><th>Opción</th><th>Efecto</th></tr>
+<tr><td><code>-n</code></td><td>No resolver nombres</td></tr>
+<tr><td><code>-e</code></td><td>Mostrar MAC</td></tr>
+<tr><td><code>-v</code> / <code>-vv</code></td><td>Más detalle (TTL, id, flags, checksums)</td></tr>
+<tr><td><code>-X</code> / <code>-A</code></td><td>Contenido en hex+ASCII / solo ASCII</td></tr>
+<tr><td><code>-c 10</code></td><td>Parar tras 10 paquetes</td></tr>
+<tr><td><code>-w f.pcap</code> / <code>-r f.pcap</code></td><td>Guardar / leer captura (ábrela con Wireshark)</td></tr>
+<tr><td><code>-i any</code></td><td>Todas las interfaces del namespace</td></tr>
+</table></div>
+
+<!-- ============================================================ -->
+<h2 id="vpn">3.11 VPN con WireGuard</h2>
+<p>Una VPN crea un <strong>túnel cifrado</strong>: una interfaz virtual (<code>wg0</code>) cuyos paquetes se meten, cifrados, dentro de paquetes UDP normales. Usamos el laboratorio <a href="#router">3.3</a>: pc1 y pc2 se hablarán por el túnel y r1 solo verá UDP cifrado. Si dejaste puesto el cortafuegos de 3.9, permite el túnel en r1: <code>iptables -I FORWARD 1 -p udp --dport 51820 -j ACCEPT</code>.</p>
+<figure class="diagram">
+<svg viewBox="0 0 760 210" role="img" aria-label="Túnel WireGuard entre pc1 y pc2 a través de r1">
+  <rect x="10" y="40" width="200" height="110" class="box" rx="8"/><text x="110" y="64" text-anchor="middle" class="title">pc1</text><text x="110" y="86" text-anchor="middle" class="mono small">eth0 10.0.1.10</text><text x="110" y="106" text-anchor="middle" class="mono small">wg0 10.99.0.1/24</text>
+  <rect x="290" y="50" width="180" height="90" class="box2" rx="8"/><text x="380" y="80" text-anchor="middle" class="title">r1</text><text x="380" y="102" text-anchor="middle" class="small">solo ve UDP 51820</text><text x="380" y="120" text-anchor="middle" class="small">contenido cifrado</text>
+  <rect x="550" y="40" width="200" height="110" class="box" rx="8"/><text x="650" y="64" text-anchor="middle" class="title">pc2</text><text x="650" y="86" text-anchor="middle" class="mono small">eth0 10.0.2.10</text><text x="650" y="106" text-anchor="middle" class="mono small">wg0 10.99.0.2/24</text>
+  <line x1="210" y1="95" x2="290" y2="95" class="wire-l3"/><line x1="470" y1="95" x2="550" y2="95" class="wire-l3"/>
+  <path d="M110 150 Q380 230 650 150" class="wire-l5 dash"/><text x="380" y="200" text-anchor="middle" class="small">túnel: 10.99.0.1 ⇄ 10.99.0.2</text>
+  <rect x="150" y="14" width="460" height="22" class="f-l5" rx="4"/><text x="380" y="30" text-anchor="middle" class="white mono">[IP 10.0.1.10→10.0.2.10 | UDP 51820 | 🔒 IP 10.99.0.1→10.99.0.2 | ICMP]</text>
+</svg>
+<figcaption>Paquete dentro de paquete: la cabecera exterior viaja en claro, la interior va cifrada.</figcaption>
+</figure>
+<h3>1. Claves (una pareja privada/pública por extremo)</h3>
+<div class="cmd"><span class="label">host</span><pre><span class="p">$ </span>mkdir -p /tmp/lab-wg
+<span class="p">$ </span>cd /tmp/lab-wg
+<span class="p">$ </span>umask 077
+<span class="p">$ </span>wg genkey &gt; pc1.key
+<span class="p">$ </span>wg pubkey &lt; pc1.key &gt; pc1.pub
+<span class="p">$ </span>wg genkey &gt; pc2.key
+<span class="p">$ </span>wg pubkey &lt; pc2.key &gt; pc2.pub
+<span class="p">$ </span>cat pc1.pub
+<span class="p">$ </span>cat pc2.pub</pre></div>
+<h3>2. Interfaz WireGuard en pc1</h3>
+<div class="cmd"><span class="label">pc1</span><pre><span class="p">pc1# </span>ip link add wg0 type wireguard
+<span class="p">pc1# </span>wg set wg0 private-key /tmp/lab-wg/pc1.key listen-port 51820
+<span class="c"># Sustituye CLAVE_PUBLICA_PC2 por el contenido de pc2.pub</span>
+<span class="p">pc1# </span>wg set wg0 peer CLAVE_PUBLICA_PC2 endpoint 10.0.2.10:51820 allowed-ips 10.99.0.2/32
+<span class="p">pc1# </span>ip addr add 10.99.0.1/24 dev wg0
+<span class="p">pc1# </span>ip link set wg0 up</pre></div>
+<h3>3. Interfaz WireGuard en pc2</h3>
+<div class="cmd"><span class="label">pc2</span><pre><span class="p">pc2# </span>ip link add wg0 type wireguard
+<span class="p">pc2# </span>wg set wg0 private-key /tmp/lab-wg/pc2.key listen-port 51820
+<span class="p">pc2# </span>wg set wg0 peer CLAVE_PUBLICA_PC1 endpoint 10.0.1.10:51820 allowed-ips 10.99.0.1/32
+<span class="p">pc2# </span>ip addr add 10.99.0.2/24 dev wg0
+<span class="p">pc2# </span>ip link set wg0 up</pre></div>
+<h3>4. Probar y observar</h3>
+<div class="cmd"><span class="label">r1, pc2 y pc1</span><pre><span class="c"># En el router: solo UDP, contenido ilegible</span>
+<span class="p">r1# </span>tcpdump -i eth1 -n -X udp port 51820
+<span class="c"># En pc2, dentro del túnel: el ICMP en claro</span>
+<span class="p">pc2# </span>tcpdump -i wg0 -n
+<span class="p">pc1# </span>ping -c 3 10.99.0.2
+<span class="c"># Estado del túnel: último handshake, bytes transferidos</span>
+<span class="p">pc1# </span>wg show</pre></div>
+<div class="table-wrap"><table>
+<tr><th>Concepto</th><th>En WireGuard</th></tr>
+<tr><td>Identidad</td><td>Clave pública de cada extremo (como las claves SSH)</td></tr>
+<tr><td><code>endpoint</code></td><td>IP:puerto real donde está el otro extremo</td></tr>
+<tr><td><code>allowed-ips</code></td><td>Qué IPs internas se aceptan de ese peer y qué destinos se le envían (a la vez filtro y tabla de rutas)</td></tr>
+<tr><td>Transporte</td><td>UDP, un solo puerto</td></tr>
+<tr><td>Cifrado</td><td>ChaCha20-Poly1305, intercambio de claves Curve25519</td></tr>
+</table></div>
+<p><strong>VPN de sitio a sitio:</strong> si en pc2 pones <code>allowed-ips 10.99.0.1/32,10.0.1.0/24</code> y añades <code>ip route add 10.0.1.0/24 dev wg0</code>, todo el tráfico de pc2 hacia la red de pc1 irá por el túnel. Así se unen las redes de dos oficinas.</p>
+<div class="cmd"><span class="label">limpieza del túnel</span><pre><span class="p">pc1# </span>ip link del wg0
+<span class="p">pc2# </span>ip link del wg0
+<span class="p">$ </span>rm -r /tmp/lab-wg</pre></div>
+
+<!-- ============================================================ -->
+<h2 id="onion">3.12 Una red de relevos tipo onion (concepto de Tor)</h2>
+<p>Tor protege la privacidad haciendo que el tráfico pase por <strong>tres relevos</strong> y cifrándolo en <strong>capas</strong>, como una cebolla: cada relevo quita una capa y solo conoce el salto anterior y el siguiente. Nadie en el camino ve a la vez quién eres y adónde vas. Vamos a construir una versión didáctica en dos partes.</p>
+<figure class="diagram">
+<svg viewBox="0 0 760 240" role="img" aria-label="Cliente, tres relevos y servidor">
+  <rect x="5" y="60" width="110" height="60" class="box" rx="8"/><text x="60" y="86" text-anchor="middle" class="title">cliente</text><text x="60" y="106" text-anchor="middle" class="mono small">10.50.0.10</text>
+  <rect x="160" y="60" width="110" height="60" class="box2" rx="8"/><text x="215" y="86" text-anchor="middle" class="title">n1</text><text x="215" y="106" text-anchor="middle" class="mono small">10.50.0.1</text>
+  <rect x="315" y="60" width="110" height="60" class="box2" rx="8"/><text x="370" y="86" text-anchor="middle" class="title">n2</text><text x="370" y="106" text-anchor="middle" class="mono small">10.50.0.2</text>
+  <rect x="470" y="60" width="110" height="60" class="box2" rx="8"/><text x="525" y="86" text-anchor="middle" class="title">n3 (salida)</text><text x="525" y="106" text-anchor="middle" class="mono small">10.50.0.3</text>
+  <rect x="625" y="60" width="130" height="60" class="box" rx="8"/><text x="690" y="86" text-anchor="middle" class="title">servidor</text><text x="690" y="106" text-anchor="middle" class="mono small">10.50.0.100</text>
+  <line x1="115" y1="90" x2="160" y2="90" class="wire-l5"/><line x1="270" y1="90" x2="315" y2="90" class="wire-l5"/><line x1="425" y1="90" x2="470" y2="90" class="wire-l5"/><line x1="580" y1="90" x2="625" y2="90" class="wire-l3"/>
+  <rect x="115" y="150" width="465" height="20" class="f-l5" opacity="0.35" rx="4"/><text x="347" y="165" text-anchor="middle" class="small">capa 1: cifrado cliente ↔ n1</text>
+  <rect x="270" y="174" width="310" height="20" class="f-l5" opacity="0.55" rx="4"/><text x="425" y="189" text-anchor="middle" class="small">capa 2: cliente ↔ n2</text>
+  <rect x="425" y="198" width="155" height="20" class="f-l5" opacity="0.85" rx="4"/><text x="502" y="213" text-anchor="middle" class="white small">capa 3: cliente ↔ n3</text>
+  <text x="60" y="40" text-anchor="middle" class="small">conoce todo</text><text x="215" y="40" text-anchor="middle" class="small">sabe: cliente, n2</text><text x="370" y="40" text-anchor="middle" class="small">sabe: n1, n3</text><text x="525" y="40" text-anchor="middle" class="small">sabe: n2, servidor</text><text x="690" y="40" text-anchor="middle" class="small">ve llegar a n3</text>
+</svg>
+<figcaption>Cada relevo solo conoce a sus dos vecinos. Las capas de cifrado se anidan.</figcaption>
+</figure>
+<p>Para simplificar, todos los nodos están en el mismo switch (<code>10.50.0.0/24</code>). En la red real estarían en países distintos, pero el principio es el mismo.</p>
+<div class="cmd"><span class="label">host</span><pre><span class="p">$ </span>sudo ip netns add red
+<span class="p">$ </span>sudo ip netns add cliente
+<span class="p">$ </span>sudo ip netns add n1
+<span class="p">$ </span>sudo ip netns add n2
+<span class="p">$ </span>sudo ip netns add n3
+<span class="p">$ </span>sudo ip netns add servidor
+<span class="p">$ </span>sudo ip netns exec red ip link add br0 type bridge
+<span class="p">$ </span>sudo ip netns exec red ip link set br0 up
+<span class="p">$ </span>sudo ip link add eth0 netns cliente type veth peer name p-cli netns red
+<span class="p">$ </span>sudo ip link add eth0 netns n1 type veth peer name p-n1 netns red
+<span class="p">$ </span>sudo ip link add eth0 netns n2 type veth peer name p-n2 netns red
+<span class="p">$ </span>sudo ip link add eth0 netns n3 type veth peer name p-n3 netns red
+<span class="p">$ </span>sudo ip link add eth0 netns servidor type veth peer name p-srv netns red</pre></div>
+<div class="cmd"><span class="label">red (el switch)</span><pre><span class="p">red# </span>ip link set p-cli master br0
+<span class="p">red# </span>ip link set p-n1 master br0
+<span class="p">red# </span>ip link set p-n2 master br0
+<span class="p">red# </span>ip link set p-n3 master br0
+<span class="p">red# </span>ip link set p-srv master br0
+<span class="p">red# </span>ip link set p-cli up
+<span class="p">red# </span>ip link set p-n1 up
+<span class="p">red# </span>ip link set p-n2 up
+<span class="p">red# </span>ip link set p-n3 up
+<span class="p">red# </span>ip link set p-srv up</pre></div>
+<div class="cmd"><span class="label">cada nodo (cambia la IP en cada uno)</span><pre><span class="p">cliente# </span>ip link set lo up
+<span class="p">cliente# </span>ip link set eth0 up
+<span class="p">cliente# </span>ip addr add 10.50.0.10/24 dev eth0
+<span class="p">n1# </span>ip link set lo up
+<span class="p">n1# </span>ip link set eth0 up
+<span class="p">n1# </span>ip addr add 10.50.0.1/24 dev eth0
+<span class="p">n2# </span>ip link set lo up
+<span class="p">n2# </span>ip link set eth0 up
+<span class="p">n2# </span>ip addr add 10.50.0.2/24 dev eth0
+<span class="p">n3# </span>ip link set lo up
+<span class="p">n3# </span>ip link set eth0 up
+<span class="p">n3# </span>ip addr add 10.50.0.3/24 dev eth0
+<span class="p">servidor# </span>ip link set lo up
+<span class="p">servidor# </span>ip link set eth0 up
+<span class="p">servidor# </span>ip addr add 10.50.0.100/24 dev eth0</pre></div>
+<div class="cmd"><span class="label">servidor</span><pre><span class="p">servidor# </span>mkdir -p /tmp/lab-onion
+<span class="p">servidor# </span>echo "contenido secreto del servidor" &gt; /tmp/lab-onion/index.html
+<span class="p">servidor# </span>python -m http.server 80 --directory /tmp/lab-onion</pre></div>
+
+<h3>Parte A: relevos sin cifrado (socat)</h3>
+<p><code>socat</code> acepta conexiones en un puerto y las reenvía a otro equipo. Encadenamos tres:</p>
+<div class="cmd"><span class="label">n3, n2, n1 (cada uno en su terminal)</span><pre><span class="c"># n3 (nodo de salida) reenvía al servidor</span>
+<span class="p">n3# </span>socat -d -d TCP-LISTEN:9001,fork,reuseaddr TCP:10.50.0.100:80
+<span class="c"># n2 reenvía a n3</span>
+<span class="p">n2# </span>socat -d -d TCP-LISTEN:9001,fork,reuseaddr TCP:10.50.0.3:9001
+<span class="c"># n1 (nodo de entrada) reenvía a n2</span>
+<span class="p">n1# </span>socat -d -d TCP-LISTEN:9001,fork,reuseaddr TCP:10.50.0.2:9001</pre></div>
+<div class="cmd"><span class="label">cliente</span><pre><span class="p">cliente# </span>curl http://10.50.0.1:9001/</pre></div>
+<p>El cliente recibe la página. Mira los mensajes de cada socat (con <code>-d -d</code> imprime quién se conecta) y el log del servidor web: el servidor cree que le habla <code>10.50.0.3</code>. <strong>Problema:</strong> espía en n1 y verás todo en claro:</p>
+<div class="cmd"><span class="label">n1</span><pre><span class="p">n1# </span>tcpdump -i eth0 -n -A port 9001</pre></div>
+<p>n1 lee "contenido secreto del servidor". Sin cifrado, un relevo malicioso lo ve todo. Para (Ctrl+C) los socat.</p>
+
+<h3>Parte B: cifrado en capas con saltos SSH anidados</h3>
+<p>SSH con <code>-J</code> (ProxyJump) hace algo muy parecido a un circuito onion: el cliente abre una sesión cifrada con n1; <em>dentro</em> de ella abre otra con n2; y dentro de esa, otra con n3. Cada relevo solo puede quitar su propia capa.</p>
+<p>Prepara un servidor SSH en cada relevo (necesita el paquete <code>openssh</code> y las claves de host del sistema; si nunca has usado sshd, genera las claves de host con <code>sudo ssh-keygen -A</code>):</p>
+<div class="cmd"><span class="label">host · una clave para tu usuario</span><pre><span class="p">$ </span>ssh-keygen -t ed25519 -f ~/.ssh/lab_onion -N ""
+<span class="p">$ </span>cat ~/.ssh/lab_onion.pub &gt;&gt; ~/.ssh/authorized_keys
+<span class="p">$ </span>chmod 600 ~/.ssh/authorized_keys</pre></div>
+<div class="cmd"><span class="label">n1, n2, n3 (cada uno en su terminal; sshd en primer plano con -D)</span><pre><span class="p">n1# </span>/usr/bin/sshd -D -p 2222 -o PasswordAuthentication=no -o PidFile=none
+<span class="p">n2# </span>/usr/bin/sshd -D -p 2222 -o PasswordAuthentication=no -o PidFile=none
+<span class="p">n3# </span>/usr/bin/sshd -D -p 2222 -o PasswordAuthentication=no -o PidFile=none</pre></div>
+<p>Desde el cliente, como <strong>tu usuario normal</strong> (no root), construimos el circuito y abrimos un túnel: el puerto local 8080 sale por n3 hacia el servidor web.</p>
+<div class="cmd"><span class="label">host → cliente como tu usuario</span><pre><span class="p">$ </span>sudo ip netns exec cliente sudo -u $USER ssh -i ~/.ssh/lab_onion -o StrictHostKeyChecking=accept-new -J $USER@10.50.0.1:2222,$USER@10.50.0.2:2222 -p 2222 -N -L 8080:10.50.0.100:80 $USER@10.50.0.3</pre></div>
+<div class="cmd"><span class="label">cliente (otra terminal) y n1</span><pre><span class="p">n1# </span>tcpdump -i eth0 -n -A port 2222
+<span class="p">cliente# </span>curl http://127.0.0.1:8080/</pre></div>
+<p>Ahora en n1 solo verás bytes ilegibles; el texto ya no aparece. Comprueba con <code>tcpdump</code> en cada relevo con quién habla cada uno:</p>
+<div class="table-wrap"><table>
+<tr><th>Nodo</th><th>Ve conexiones con</th><th>¿Puede leer el contenido?</th><th>¿Sabe quién es el cliente?</th><th>¿Sabe cuál es el destino?</th></tr>
+<tr><td>n1 (entrada)</td><td>cliente y n2</td><td>No</td><td>Sí</td><td>No</td></tr>
+<tr><td>n2 (intermedio)</td><td>n1 y n3</td><td>No</td><td>No</td><td>No</td></tr>
+<tr><td>n3 (salida)</td><td>n2 y servidor</td><td>Sí, si el destino no usa HTTPS</td><td>No</td><td>Sí</td></tr>
+<tr><td>servidor</td><td>n3</td><td>Sí</td><td>No</td><td>—</td></tr>
+</table></div>
+<div class="note"><p><strong>Diferencias con el Tor real:</strong> Tor usa su propio protocolo con celdas de tamaño fijo, elige los relevos al azar de entre miles, renueva circuitos periódicamente y usa un directorio de consenso firmado. Este laboratorio solo ilustra la idea central: <em>enrutamiento por relevos + cifrado en capas</em>. Fíjate también en la lección de la última fila: el nodo de salida ve el tráfico si la aplicación no lo cifra, por eso HTTPS sigue siendo necesario.</p></div>
+<div class="cmd"><span class="label">host · limpieza</span><pre><span class="c"># Para con Ctrl+C sshd, servidor web y ssh; después:</span>
+<span class="p">$ </span>sudo ip netns del red
+<span class="p">$ </span>sudo ip netns del cliente
+<span class="p">$ </span>sudo ip netns del n1
+<span class="p">$ </span>sudo ip netns del n2
+<span class="p">$ </span>sudo ip netns del n3
+<span class="p">$ </span>sudo ip netns del servidor</pre></div>
+<p>Quita también la línea de <code>lab_onion</code> de <code>~/.ssh/authorized_keys</code> (ábrelo con un editor) y borra <code>~/.ssh/lab_onion*</code>.</p>
+
+<!-- ============================================================ -->
+<h2 id="ipv6">3.13 IPv6 en dos minutos</h2>
+<p>IPv6 viene activado en cada namespace. Al encender una interfaz, se autoasigna una dirección <strong>link-local</strong> (<code>fe80::/64</code>) derivada de la MAC. En lugar de ARP usa <strong>NDP</strong> (mensajes ICMPv6).</p>
+<div class="cmd"><span class="label">con el laboratorio 3.2 (pc1 y pc2 directos)</span><pre><span class="p">pc1# </span>ip -6 addr show eth0
+<span class="p">pc1# </span>ip addr add 2001:db8::1/64 dev eth0
+<span class="p">pc2# </span>ip addr add 2001:db8::2/64 dev eth0
+<span class="p">pc2# </span>tcpdump -i eth0 -n icmp6
+<span class="p">pc1# </span>ping -c 2 2001:db8::2
+<span class="c"># La "tabla ARP" de IPv6</span>
+<span class="p">pc1# </span>ip -6 neigh
+<span class="c"># Ping a todos los equipos del enlace (multicast ff02::1)</span>
+<span class="p">pc1# </span>ping -c 2 -I eth0 ff02::1</pre></div>
+<div class="table-wrap"><table>
+<tr><th>IPv4</th><th>IPv6</th></tr>
+<tr><td>32 bits, 10.0.0.1</td><td>128 bits, 2001:db8::1</td></tr>
+<tr><td>ARP</td><td>NDP: Neighbor Solicitation / Advertisement (ICMPv6 135/136)</td></tr>
+<tr><td>Broadcast</td><td>No existe; se usa multicast (ff02::1 = todos)</td></tr>
+<tr><td>DHCP</td><td>SLAAC (Router Advertisement) y/o DHCPv6</td></tr>
+<tr><td>NAT habitual</td><td>Normalmente innecesario: hay direcciones de sobra</td></tr>
+<tr><td>Fragmentan los routers</td><td>Solo fragmenta el emisor</td></tr>
+</table></div>
+
+<!-- ============================================================ -->
+<h2 id="policy">3.14 Enrutamiento por políticas (avanzado)</h2>
+<p>Normalmente la ruta depende solo del destino. Con <code>ip rule</code> puede depender del origen, de una marca del cortafuegos, etc. Ejemplo en un router con dos salidas (<code>wan1</code>, <code>wan2</code>): los equipos 10.0.1.0/25 salen por wan2.</p>
+<div class="cmd"><span class="label">router con dos salidas</span><pre><span class="p">r# </span>ip route add default via 198.51.100.1 table 100
+<span class="p">r# </span>ip rule add from 10.0.1.0/25 table 100 priority 1000
+<span class="p">r# </span>ip rule show
+<span class="p">r# </span>ip route show table 100
+<span class="c"># Comprobar qué ruta usaría un paquete desde un origen concreto</span>
+<span class="p">r# </span>ip route get 8.8.8.8 from 10.0.1.5 iif lan</pre></div>
+
+<div class="pager"><a href="capa2.html">← Capa 2</a><a href="capa4.html">Capa 4: Transporte →</a></div>
+</main>
+</div>
+<footer>netns·lab · Capa 3</footer>
+</body>
+</html>

@@ -1,0 +1,590 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Capa 2 · Enlace</title>
+<meta name="description" content="Capa de enlace con ip netns: MAC, tramas Ethernet, ARP, switches, VLAN y un ping construido a mano.">
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/app.js"></script>
+</head>
+<body>
+<header class="topbar"><div class="topbar-inner">
+  <a class="brand" href="index.html">netns<span>·</span>lab</a>
+  <nav class="topnav">
+    <a href="index.html">Inicio</a>
+    <a href="capa2.html" class="active">Capa 2</a>
+    <a href="capa3.html">Capa 3</a>
+    <a href="capa4.html">Capa 4</a>
+    <a href="capa5.html">Capas 5-7</a>
+    <a href="permisos.html">Permisos</a>
+    <a href="limpieza.html">Chuleta</a>
+  </nav>
+  <button id="theme-toggle" aria-label="Cambiar tema">◐</button>
+</div></header>
+
+<div class="layout">
+<aside class="toc"><h4>Capa 2</h4><ol></ol></aside>
+<main>
+<span class="layer-tag tag-l2">Capa 2 · Enlace de datos</span>
+<h1>Capa 2: tramas, MAC, ARP y switches</h1>
+<p class="lead">La capa de enlace mueve <strong>tramas</strong> entre equipos que están en el mismo medio físico (el mismo cable o el mismo switch). Aquí no hay rutas ni IPs: solo direcciones MAC de 48 bits.</p>
+
+<!-- ============================================================ -->
+<h2 id="lab1">2.1 Dos ordenadores y un cable</h2>
+<p>Vamos a crear dos "ordenadores" (<code>pc1</code> y <code>pc2</code>) y unirlos con un cable virtual.</p>
+
+<figure class="diagram">
+<svg viewBox="0 0 760 170" role="img" aria-label="pc1 y pc2 unidos por un cable veth">
+  <rect x="40" y="30" width="240" height="110" class="box" rx="10"/>
+  <text x="160" y="56" text-anchor="middle" class="title">pc1</text>
+  <text x="160" y="78" text-anchor="middle" class="mono">MAC 02:00:00:00:00:01</text>
+  <text x="160" y="96" text-anchor="middle" class="mono small">(IP 10.0.0.1/24 en 2.4)</text>
+  <rect x="220" y="104" width="70" height="28" class="f-l2" rx="5"/><text x="255" y="123" text-anchor="middle" class="white mono">eth0</text>
+  <rect x="480" y="30" width="240" height="110" class="box" rx="10"/>
+  <text x="600" y="56" text-anchor="middle" class="title">pc2</text>
+  <text x="600" y="78" text-anchor="middle" class="mono">MAC 02:00:00:00:00:02</text>
+  <text x="600" y="96" text-anchor="middle" class="mono small">(IP 10.0.0.2/24 en 2.4)</text>
+  <rect x="470" y="104" width="70" height="28" class="f-l2" rx="5"/><text x="505" y="123" text-anchor="middle" class="white mono">eth0</text>
+  <line x1="290" y1="118" x2="470" y2="118" class="wire-l2"/>
+  <text x="380" y="110" text-anchor="middle" class="small">veth (cable)</text>
+</svg>
+<figcaption>Topología del laboratorio 2.1</figcaption>
+</figure>
+
+<h3>Paso 1: crear los ordenadores</h3>
+<div class="cmd"><span class="label">host</span><pre><span class="p">$ </span>sudo ip netns add pc1
+<span class="p">$ </span>sudo ip netns add pc2
+<span class="p">$ </span>ip netns list</pre></div>
+
+<h3>Paso 2: crear el cable</h3>
+<p>Un par veth nace en el namespace donde lo creas (el host). Tiene dos extremos: <code>veth1</code> y <code>veth2</code>.</p>
+<div class="cmd"><span class="label">host</span><pre><span class="p">$ </span>sudo ip link add veth1 type veth peer name veth2
+<span class="c"># Los dos extremos aparecen en tu host</span>
+<span class="p">$ </span>ip link show type veth</pre></div>
+
+<h3>Paso 3: "enchufar" cada extremo en un ordenador</h3>
+<div class="cmd"><span class="label">host</span><pre><span class="p">$ </span>sudo ip link set veth1 netns pc1
+<span class="p">$ </span>sudo ip link set veth2 netns pc2
+<span class="c"># Ya no están en el host</span>
+<span class="p">$ </span>ip link show type veth</pre></div>
+
+<h3>Paso 4: renombrar y poner MAC fáciles de leer</h3>
+<p>Dentro de cada PC llamaremos a la tarjeta <code>eth0</code>, como en un equipo real. Para cambiar el nombre o la MAC la interfaz debe estar apagada (lo está).</p>
+<div class="cmd"><span class="label">host → pc1</span><pre><span class="p">$ </span>sudo ip netns exec pc1 ip link set veth1 name eth0
+<span class="p">$ </span>sudo ip netns exec pc1 ip link set eth0 address 02:00:00:00:00:01
+<span class="p">$ </span>sudo ip netns exec pc1 ip link set eth0 up
+<span class="p">$ </span>sudo ip netns exec pc1 ip link set lo up</pre></div>
+<div class="cmd"><span class="label">host → pc2</span><pre><span class="p">$ </span>sudo ip netns exec pc2 ip link set veth2 name eth0
+<span class="p">$ </span>sudo ip netns exec pc2 ip link set eth0 address 02:00:00:00:00:02
+<span class="p">$ </span>sudo ip netns exec pc2 ip link set eth0 up
+<span class="p">$ </span>sudo ip netns exec pc2 ip link set lo up</pre></div>
+
+<h3>Paso 5: comprobar</h3>
+<div class="cmd"><span class="label">pc1</span><pre><span class="p">$ </span>sudo ip netns exec pc1 ip link show eth0
+<span class="c"># Más detalle (tipo veth, MTU mínima y máxima…)</span>
+<span class="p">$ </span>sudo ip netns exec pc1 ip -d link show eth0
+<span class="c"># Estadísticas: tramas y bytes enviados/recibidos, errores, descartes</span>
+<span class="p">$ </span>sudo ip netns exec pc1 ip -s link show eth0</pre></div>
+<pre class="out">2: eth0@if3: &lt;BROADCAST,MULTICAST,UP,LOWER_UP&gt; mtu 1500 qdisc noqueue state UP mode DEFAULT group default qlen 1000
+    link/ether 02:00:00:00:00:01 brd ff:ff:ff:ff:ff:ff link-netns pc2</pre>
+<div class="table-wrap"><table>
+<tr><th>Campo</th><th>Significado</th></tr>
+<tr><td><code>eth0@if3</code></td><td>Nombre de la interfaz; <code>@if3</code> es el índice de su pareja veth (en el otro namespace).</td></tr>
+<tr><td><code>UP</code></td><td>Administrativamente encendida (tú hiciste <code>set up</code>).</td></tr>
+<tr><td><code>LOWER_UP</code></td><td>Hay "señal" en el cable: el otro extremo también está encendido. Si apagas pc2, desaparece.</td></tr>
+<tr><td><code>mtu 1500</code></td><td>Tamaño máximo de la carga útil de una trama Ethernet.</td></tr>
+<tr><td><code>link/ether …</code></td><td>Tu dirección MAC.</td></tr>
+<tr><td><code>brd ff:ff:ff:ff:ff:ff</code></td><td>Dirección de broadcast de capa 2 (a todos).</td></tr>
+<tr><td><code>link-netns pc2</code></td><td>El otro extremo del cable vive en el namespace pc2.</td></tr>
+</table></div>
+<div class="note"><p><strong>Experimento:</strong> apaga el extremo de pc2 con <code>sudo ip netns exec pc2 ip link set eth0 down</code> y mira de nuevo pc1: verás <code>NO-CARRIER</code> y <code>state LOWERLAYERDOWN</code>, igual que al desenchufar un cable. Vuelve a encenderlo con <code>up</code>.</p></div>
+
+<!-- ============================================================ -->
+<h2 id="trama">2.2 Anatomía de una trama Ethernet</h2>
+<figure class="diagram">
+<svg viewBox="0 0 760 150" role="img" aria-label="Campos de una trama Ethernet II">
+  <rect x="10" y="40" width="130" height="50" class="f-l2"/><text x="75" y="62" text-anchor="middle" class="white">MAC destino</text><text x="75" y="80" text-anchor="middle" class="white small" style="fill:#fff">6 bytes</text>
+  <rect x="140" y="40" width="130" height="50" class="f-l2" opacity="0.85"/><text x="205" y="62" text-anchor="middle" class="white">MAC origen</text><text x="205" y="80" text-anchor="middle" style="fill:#fff" class="small">6 bytes</text>
+  <rect x="270" y="40" width="90" height="50" class="f-acc"/><text x="315" y="62" text-anchor="middle" class="white">EtherType</text><text x="315" y="80" text-anchor="middle" style="fill:#fff" class="small">2 bytes</text>
+  <rect x="360" y="40" width="300" height="50" class="box"/><text x="510" y="62" text-anchor="middle">Carga útil (payload)</text><text x="510" y="80" text-anchor="middle" class="small">46 – 1500 bytes (MTU)</text>
+  <rect x="660" y="40" width="90" height="50" class="f-l2" opacity="0.7"/><text x="705" y="62" text-anchor="middle" class="white">FCS</text><text x="705" y="80" text-anchor="middle" style="fill:#fff" class="small">4 bytes</text>
+  <text x="10" y="25" class="title">Trama Ethernet II</text>
+  <text x="270" y="118" class="small">0x0800 = IPv4 · 0x0806 = ARP · 0x86DD = IPv6 · 0x8100 = VLAN 802.1Q</text>
+  <text x="270" y="136" class="small">0x88B5 = experimental (la usaremos para mandar "texto" en capa 2)</text>
+</svg>
+<figcaption>El FCS (checksum) lo calcula y comprueba la tarjeta; tcpdump no lo muestra.</figcaption>
+</figure>
+
+<h3>Tipos de dirección MAC</h3>
+<div class="table-wrap"><table>
+<tr><th>Tipo</th><th>Cómo se reconoce</th><th>Ejemplo</th><th>Quién la recibe</th></tr>
+<tr><td>Unicast</td><td>Bit menos significativo del 1er byte = 0</td><td><code>02:00:00:00:00:01</code></td><td>Una sola tarjeta</td></tr>
+<tr><td>Multicast</td><td>Bit menos significativo del 1er byte = 1</td><td><code>01:00:5e:00:00:01</code></td><td>Las tarjetas suscritas al grupo</td></tr>
+<tr><td>Broadcast</td><td>Todo a unos</td><td><code>ff:ff:ff:ff:ff:ff</code></td><td>Todas las del segmento</td></tr>
+<tr><td>Administrada localmente</td><td>2º bit del 1er byte = 1 (02, 06, 0a, 0e…)</td><td><code>02:…</code></td><td>Puesta a mano / virtual</td></tr>
+<tr><td>Global (de fábrica)</td><td>2º bit = 0; los 3 primeros bytes son el fabricante (OUI)</td><td><code>3c:52:82:…</code></td><td>Asignada por el fabricante</td></tr>
+</table></div>
+
+<!-- ============================================================ -->
+<h2 id="raw">2.3 Comunicarse solo en capa 2 (sin IP)</h2>
+<p>Los PCs aún <strong>no tienen IP</strong>. Aun así pueden hablar: basta con mandar una trama con la MAC de destino. Lo haremos con <strong>scapy</strong>, una consola de Python para fabricar paquetes.</p>
+
+<h3>Terminal A: escuchar en pc2</h3>
+<p><code>-e</code> muestra la cabecera Ethernet (las MAC), <code>-n</code> no traduce nombres, <code>-X</code> enseña el contenido en hexadecimal y ASCII.</p>
+<div class="cmd"><span class="label">pc2 · terminal A</span><pre><span class="p">$ </span>sudo ip netns exec pc2 tcpdump -i eth0 -e -n -X</pre></div>
+
+<h3>Terminal B: abrir scapy en pc1</h3>
+<div class="cmd"><span class="label">pc1 · terminal B</span><pre><span class="p">$ </span>sudo ip netns exec pc1 scapy</pre></div>
+<p>Dentro de scapy (el prompt es <code>&gt;&gt;&gt;</code>) construimos la trama campo a campo:</p>
+<div class="cmd"><span class="label">scapy en pc1</span><pre><span class="c"># Una trama Ethernet: destino pc2, origen pc1, tipo experimental</span>
+<span class="p">&gt;&gt;&gt; </span>t = Ether(dst="02:00:00:00:00:02", src="02:00:00:00:00:01", type=0x88b5)
+<span class="c"># Le pegamos (/) una carga útil de texto</span>
+<span class="p">&gt;&gt;&gt; </span>t = t / Raw(load=b"Hola pc2, soy pc1 en capa 2")
+<span class="c"># Ver la trama campo a campo</span>
+<span class="p">&gt;&gt;&gt; </span>t.show()
+<span class="c"># Ver los bytes exactos que viajarán por el cable</span>
+<span class="p">&gt;&gt;&gt; </span>hexdump(t)
+<span class="c"># sendp = enviar en capa 2 (la "p" es de "packet at layer 2")</span>
+<span class="p">&gt;&gt;&gt; </span>sendp(t, iface="eth0")</pre></div>
+<p>En la terminal A aparece:</p>
+<pre class="out">12:00:01.000 02:00:00:00:00:01 &gt; 02:00:00:00:00:02, ethertype Unknown (0x88b5), length 41:
+	0x0000:  486f 6c61 2070 6332 2c20 736f 7920 7063  Hola.pc2,.soy.pc
+	0x0010:  3120 656e 2063 6170 6120 32              1.en.capa.2</pre>
+<div class="ok"><p>Acabas de comunicar dos ordenadores <strong>sin IP, sin puertos, sin nada</strong>: solo MAC origen, MAC destino, tipo y datos. Así es la capa 2.</p></div>
+
+<h3>Broadcast y MAC ajenas</h3>
+<div class="cmd"><span class="label">scapy en pc1</span><pre><span class="c"># A todos (broadcast): pc2 lo recibe</span>
+<span class="p">&gt;&gt;&gt; </span>sendp(Ether(dst="ff:ff:ff:ff:ff:ff", type=0x88b5)/Raw(load=b"a todos"), iface="eth0")
+<span class="c"># A una MAC que no es la de pc2: tcpdump la ve porque pone la tarjeta en modo promiscuo</span>
+<span class="p">&gt;&gt;&gt; </span>sendp(Ether(dst="02:00:00:00:00:99", type=0x88b5)/Raw(load=b"no es para ti"), iface="eth0")</pre></div>
+<div class="note"><p><strong>Modo promiscuo:</strong> normalmente una tarjeta descarta las tramas cuya MAC destino no es la suya, broadcast o multicast suscrito. <code>tcpdump</code> activa el modo promiscuo para verlo todo. Prueba con <code>tcpdump -p</code> (sin promiscuo) y el último envío ya no aparecerá. Puedes activarlo a mano con <code>ip link set eth0 promisc on</code>.</p></div>
+
+<h3>Recibir con scapy en lugar de tcpdump</h3>
+<div class="cmd"><span class="label">scapy en pc2</span><pre><span class="p">$ </span>sudo ip netns exec pc2 scapy
+<span class="c"># Espera 1 trama del tipo 0x88b5 y guárdala</span>
+<span class="p">&gt;&gt;&gt; </span>r = sniff(iface="eth0", filter="ether proto 0x88b5", count=1)
+<span class="p">&gt;&gt;&gt; </span>r[0].show()
+<span class="p">&gt;&gt;&gt; </span>r[0][Raw].load</pre></div>
+<p>Con scapy en pc2 escuchando y scapy en pc1 enviando, ya tienes un "chat" en capa 2. Contesta desde pc2 con <code>sendp(Ether(dst=r[0].src, type=0x88b5)/Raw(load=b"recibido"), iface="eth0")</code>.</p>
+
+<!-- ============================================================ -->
+<h2 id="arp">2.4 ARP: de IP a MAC</h2>
+<p>Las aplicaciones usan direcciones IP, pero el cable solo entiende MAC. <strong>ARP</strong> (Address Resolution Protocol) pregunta "¿quién tiene la IP X? dímelo a mí" por broadcast, y el dueño responde con su MAC. La respuesta se guarda en la <strong>tabla ARP</strong> (tabla de vecinos).</p>
+
+<h3>Paso 1: poner IPs</h3>
+<div class="cmd"><span class="label">host</span><pre><span class="p">$ </span>sudo ip netns exec pc1 ip addr add 10.0.0.1/24 dev eth0
+<span class="p">$ </span>sudo ip netns exec pc2 ip addr add 10.0.0.2/24 dev eth0
+<span class="p">$ </span>sudo ip netns exec pc1 ip addr show eth0</pre></div>
+
+<h3>Paso 2: mirar la tabla ARP (vacía)</h3>
+<div class="cmd"><span class="label">pc1</span><pre><span class="p">$ </span>sudo ip netns exec pc1 ip neigh show</pre></div>
+
+<h3>Paso 3: capturar mientras se hace un ping</h3>
+<div class="cmd"><span class="label">pc2 · terminal A</span><pre><span class="p">$ </span>sudo ip netns exec pc2 tcpdump -i eth0 -e -n arp or icmp</pre></div>
+<div class="cmd"><span class="label">pc1 · terminal B</span><pre><span class="p">$ </span>sudo ip netns exec pc1 ping -c 1 10.0.0.2
+<span class="p">$ </span>sudo ip netns exec pc1 ip neigh show</pre></div>
+<pre class="out">02:00:00:00:00:01 &gt; ff:ff:ff:ff:ff:ff, ethertype ARP (0x0806), length 42: Request who-has 10.0.0.2 tell 10.0.0.1, length 28
+02:00:00:00:00:02 &gt; 02:00:00:00:00:01, ethertype ARP (0x0806), length 42: Reply 10.0.0.2 is-at 02:00:00:00:00:02, length 28
+02:00:00:00:00:01 &gt; 02:00:00:00:00:02, ethertype IPv4 (0x0800), length 98: 10.0.0.1 &gt; 10.0.0.2: ICMP echo request, id 4242, seq 1, length 64
+02:00:00:00:00:02 &gt; 02:00:00:00:00:01, ethertype IPv4 (0x0800), length 98: 10.0.0.2 &gt; 10.0.0.1: ICMP echo reply, id 4242, seq 1, length 64
+
+10.0.0.2 dev eth0 lladdr 02:00:00:00:00:02 REACHABLE</pre>
+
+<figure class="diagram">
+<svg viewBox="0 0 760 300" role="img" aria-label="Diagrama de secuencia ARP y ping">
+  <defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="arrow-head"/></marker></defs>
+  <rect x="80" y="10" width="120" height="30" class="box" rx="6"/><text x="140" y="30" text-anchor="middle" class="title">pc1</text>
+  <rect x="560" y="10" width="120" height="30" class="box" rx="6"/><text x="620" y="30" text-anchor="middle" class="title">pc2</text>
+  <line x1="140" y1="40" x2="140" y2="290" class="wire dash"/>
+  <line x1="620" y1="40" x2="620" y2="290" class="wire dash"/>
+  <line x1="140" y1="75" x2="618" y2="95" class="wire-l2" marker-end="url(#ah)"/>
+  <text x="380" y="72" text-anchor="middle" class="mono">ARP Request (broadcast ff:ff…): ¿quién tiene 10.0.0.2?</text>
+  <line x1="620" y1="125" x2="142" y2="145" class="wire-l2" marker-end="url(#ah)"/>
+  <text x="380" y="122" text-anchor="middle" class="mono">ARP Reply (unicast): 10.0.0.2 está en 02:..:02</text>
+  <text x="20" y="168" class="small">pc1 guarda en su</text><text x="20" y="182" class="small">tabla ARP</text>
+  <text x="640" y="100" class="small">pc2 también aprende</text><text x="640" y="114" class="small">la MAC de pc1</text>
+  <line x1="140" y1="200" x2="618" y2="220" class="wire-l3" marker-end="url(#ah)"/>
+  <text x="380" y="197" text-anchor="middle" class="mono">ICMP Echo Request (tipo 8)</text>
+  <line x1="620" y1="250" x2="142" y2="270" class="wire-l3" marker-end="url(#ah)"/>
+  <text x="380" y="247" text-anchor="middle" class="mono">ICMP Echo Reply (tipo 0)</text>
+</svg>
+<figcaption>Un ping a un vecino nuevo = 2 tramas ARP + 2 paquetes ICMP.</figcaption>
+</figure>
+
+<h3>Formato de un mensaje ARP</h3>
+<div class="table-wrap"><table>
+<tr><th>Campo</th><th>Request (pc1)</th><th>Reply (pc2)</th></tr>
+<tr><td>Ethernet destino</td><td><code>ff:ff:ff:ff:ff:ff</code></td><td><code>02:00:00:00:00:01</code></td></tr>
+<tr><td>Ethernet origen</td><td><code>02:00:00:00:00:01</code></td><td><code>02:00:00:00:00:02</code></td></tr>
+<tr><td>EtherType</td><td colspan="2"><code>0x0806</code></td></tr>
+<tr><td>hwtype / ptype</td><td colspan="2">1 (Ethernet) / 0x0800 (IPv4)</td></tr>
+<tr><td>op</td><td>1 (who-has)</td><td>2 (is-at)</td></tr>
+<tr><td>hwsrc (MAC emisor)</td><td><code>02:00:00:00:00:01</code></td><td><code>02:00:00:00:00:02</code></td></tr>
+<tr><td>psrc (IP emisor)</td><td><code>10.0.0.1</code></td><td><code>10.0.0.2</code></td></tr>
+<tr><td>hwdst (MAC objetivo)</td><td><code>00:00:00:00:00:00</code> (desconocida)</td><td><code>02:00:00:00:00:01</code></td></tr>
+<tr><td>pdst (IP objetivo)</td><td><code>10.0.0.2</code></td><td><code>10.0.0.1</code></td></tr>
+</table></div>
+
+<h3>Estados de la tabla de vecinos</h3>
+<div class="table-wrap"><table>
+<tr><th>Estado</th><th>Significado</th></tr>
+<tr><td><code>INCOMPLETE</code></td><td>Se ha enviado el ARP Request y aún no hay respuesta.</td></tr>
+<tr><td><code>REACHABLE</code></td><td>MAC confirmada recientemente (unos 30 s).</td></tr>
+<tr><td><code>STALE</code></td><td>Hace tiempo que no se confirma; se sigue usando pero se verificará al volver a enviar.</td></tr>
+<tr><td><code>DELAY</code> / <code>PROBE</code></td><td>Verificando una entrada STALE (primero espera, luego pregunta en unicast).</td></tr>
+<tr><td><code>FAILED</code></td><td>Nadie respondió: el equipo no existe o no contesta.</td></tr>
+<tr><td><code>PERMANENT</code></td><td>Entrada estática puesta a mano. No caduca.</td></tr>
+</table></div>
+
+<h3>Manipular la tabla ARP</h3>
+<div class="cmd"><span class="label">pc1</span><pre><span class="c"># Ver con detalle (incluye contadores y tiempos)</span>
+<span class="p">$ </span>sudo ip netns exec pc1 ip -s neigh show
+<span class="c"># Borrar todas las entradas de eth0</span>
+<span class="p">$ </span>sudo ip netns exec pc1 ip neigh flush dev eth0
+<span class="c"># Ping a una IP que no existe: verás INCOMPLETE y luego FAILED</span>
+<span class="p">$ </span>sudo ip netns exec pc1 ping -c 2 10.0.0.50
+<span class="p">$ </span>sudo ip netns exec pc1 ip neigh show
+<span class="c"># Entrada estática (permanente)</span>
+<span class="p">$ </span>sudo ip netns exec pc1 ip neigh add 10.0.0.2 lladdr 02:00:00:00:00:02 dev eth0 nud permanent
+<span class="c"># Cambiarla o borrarla</span>
+<span class="p">$ </span>sudo ip netns exec pc1 ip neigh replace 10.0.0.2 lladdr 02:00:00:00:00:02 dev eth0 nud reachable
+<span class="p">$ </span>sudo ip netns exec pc1 ip neigh del 10.0.0.2 dev eth0</pre></div>
+
+<h3>arping: hablar ARP directamente</h3>
+<div class="cmd"><span class="label">pc1</span><pre><span class="c"># "Ping" de capa 2: pregunta la MAC de 10.0.0.2 tres veces</span>
+<span class="p">$ </span>sudo ip netns exec pc1 arping -I eth0 -c 3 10.0.0.2
+<span class="c"># Detección de IP duplicada (DAD): ¿alguien usa ya 10.0.0.2?</span>
+<span class="p">$ </span>sudo ip netns exec pc1 arping -I eth0 -D -c 2 10.0.0.2
+<span class="c"># ARP gratuito: anunciar mi propia IP/MAC a todos (se usa al cambiar de MAC o en failover)</span>
+<span class="p">$ </span>sudo ip netns exec pc1 arping -I eth0 -U -c 2 10.0.0.1</pre></div>
+<div class="note"><p>Fíjate en que si <code>arping -D</code> obtiene respuesta, devuelve código de error 1: significa "esa IP está ocupada". Lo usan los clientes DHCP antes de configurar una IP.</p></div>
+
+<!-- ============================================================ -->
+<h2 id="ping-manual">2.5 Un ping desmontado pieza a pieza (en los dos PCs)</h2>
+<p>Ahora vamos a hacer <strong>a mano</strong> todo lo que hace el kernel durante un ping: el ARP Request, el ARP Reply, el Echo Request y el Echo Reply. Para que el kernel de pc2 no conteste por nosotros, le quitamos esas funciones.</p>
+
+<figure class="diagram">
+<svg viewBox="0 0 760 330" role="img" aria-label="Ping manual en cuatro pasos">
+  <defs><marker id="ah2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="arrow-head"/></marker></defs>
+  <rect x="60" y="10" width="170" height="34" class="box" rx="6"/><text x="145" y="32" text-anchor="middle" class="title">pc1 (scapy)</text>
+  <rect x="530" y="10" width="170" height="34" class="box" rx="6"/><text x="615" y="32" text-anchor="middle" class="title">pc2 (scapy)</text>
+  <line x1="145" y1="44" x2="145" y2="320" class="wire dash"/><line x1="615" y1="44" x2="615" y2="320" class="wire dash"/>
+  <circle cx="30" cy="85" r="13" class="f-acc"/><text x="30" y="90" text-anchor="middle" class="white">1</text>
+  <line x1="145" y1="80" x2="613" y2="100" class="wire-l2" marker-end="url(#ah2)"/>
+  <text x="380" y="78" text-anchor="middle" class="mono">srp1(ARP op=1)  → espera respuesta</text>
+  <circle cx="730" cy="145" r="13" class="f-acc"/><text x="730" y="150" text-anchor="middle" class="white">2</text>
+  <line x1="615" y1="140" x2="147" y2="160" class="wire-l2" marker-end="url(#ah2)"/>
+  <text x="380" y="137" text-anchor="middle" class="mono">sendp(ARP op=2) escrito a mano</text>
+  <circle cx="30" cy="215" r="13" class="f-acc"/><text x="30" y="220" text-anchor="middle" class="white">3</text>
+  <line x1="145" y1="210" x2="613" y2="230" class="wire-l3" marker-end="url(#ah2)"/>
+  <text x="380" y="207" text-anchor="middle" class="mono">srp1(IP/ICMP type=8)</text>
+  <circle cx="730" cy="275" r="13" class="f-acc"/><text x="730" y="280" text-anchor="middle" class="white">4</text>
+  <line x1="615" y1="270" x2="147" y2="290" class="wire-l3" marker-end="url(#ah2)"/>
+  <text x="380" y="267" text-anchor="middle" class="mono">sendp(IP/ICMP type=0) escrito a mano</text>
+</svg>
+<figcaption>Cada flecha la escribes tú. El kernel de pc2 está "mudo".</figcaption>
+</figure>
+
+<h3>Preparación: silenciar el kernel de pc2</h3>
+<div class="cmd"><span class="label">pc2</span><pre><span class="c"># La interfaz deja de responder ARP (flag NOARP)</span>
+<span class="p">$ </span>sudo ip netns exec pc2 ip link set dev eth0 arp off
+<span class="c"># El kernel deja de responder pings</span>
+<span class="p">$ </span>sudo ip netns exec pc2 sysctl -w net.ipv4.icmp_echo_ignore_all=1
+<span class="c"># pc1 olvida lo que sabía</span>
+<span class="p">$ </span>sudo ip netns exec pc1 ip neigh flush dev eth0</pre></div>
+<p>Comprueba que el ping normal ya no funciona: <code>sudo ip netns exec pc1 ping -c 2 10.0.0.2</code> → 100% pérdida.</p>
+<p>Abre <strong>tres terminales</strong>: una con tcpdump para ver todo, y una con scapy en cada PC.</p>
+<div class="cmd"><span class="label">terminal 1 · observador en pc2</span><pre><span class="p">$ </span>sudo ip netns exec pc2 tcpdump -i eth0 -e -n -v</pre></div>
+<div class="cmd"><span class="label">terminal 2 y 3</span><pre><span class="p">$ </span>sudo ip netns exec pc1 scapy
+<span class="p">$ </span>sudo ip netns exec pc2 scapy</pre></div>
+
+<h3>Paso 1 · pc1 pregunta por ARP</h3>
+<p>Preparamos la pregunta y la enviamos con <code>srp1</code>: envía en capa 2 y <strong>espera la primera respuesta</strong> que encaje (hasta 120 s).</p>
+<div class="cmd"><span class="label">scapy en pc1</span><pre><span class="p">&gt;&gt;&gt; </span>pregunta = Ether(dst="ff:ff:ff:ff:ff:ff", src="02:00:00:00:00:01") / ARP(op=1, hwsrc="02:00:00:00:00:01", psrc="10.0.0.1", pdst="10.0.0.2")
+<span class="p">&gt;&gt;&gt; </span>pregunta.show()
+<span class="p">&gt;&gt;&gt; </span>resp = srp1(pregunta, iface="eth0", timeout=120)</pre></div>
+<p>pc1 se queda esperando. En tcpdump verás el <code>Request who-has 10.0.0.2 tell 10.0.0.1</code> y <strong>ninguna respuesta</strong>.</p>
+
+<h3>Paso 2 · pc2 responde a mano</h3>
+<div class="cmd"><span class="label">scapy en pc2</span><pre><span class="p">&gt;&gt;&gt; </span>respuesta = Ether(dst="02:00:00:00:00:01", src="02:00:00:00:00:02") / ARP(op=2, hwsrc="02:00:00:00:00:02", psrc="10.0.0.2", hwdst="02:00:00:00:00:01", pdst="10.0.0.1")
+<span class="p">&gt;&gt;&gt; </span>sendp(respuesta, iface="eth0")</pre></div>
+<p>En pc1, <code>srp1</code> termina. Veamos qué recibió:</p>
+<div class="cmd"><span class="label">scapy en pc1</span><pre><span class="p">&gt;&gt;&gt; </span>resp.show()
+<span class="p">&gt;&gt;&gt; </span>mac_pc2 = resp[ARP].hwsrc
+<span class="p">&gt;&gt;&gt; </span>mac_pc2</pre></div>
+<pre class="out">'02:00:00:00:00:02'</pre>
+
+<h3>Paso 3 · pc2 se pone a escuchar y pc1 envía el Echo Request</h3>
+<p>Primero pc2 se queda esperando un paquete ICMP:</p>
+<div class="cmd"><span class="label">scapy en pc2</span><pre><span class="p">&gt;&gt;&gt; </span>p = sniff(iface="eth0", filter="icmp", count=1)[0]</pre></div>
+<p>Luego pc1 construye el ping capa por capa: Ethernet (con la MAC que aprendimos) / IP / ICMP / datos:</p>
+<div class="cmd"><span class="label">scapy en pc1</span><pre><span class="p">&gt;&gt;&gt; </span>eco = Ether(dst=mac_pc2, src="02:00:00:00:00:01") / IP(src="10.0.0.1", dst="10.0.0.2", ttl=64) / ICMP(type=8, code=0, id=0x1234, seq=1) / Raw(load=b"ping hecho a mano")
+<span class="c"># show2() muestra el paquete con los checksums y longitudes ya calculados</span>
+<span class="p">&gt;&gt;&gt; </span>eco.show2()
+<span class="p">&gt;&gt;&gt; </span>resp = srp1(eco, iface="eth0", timeout=120)</pre></div>
+
+<h3>Paso 4 · pc2 construye el Echo Reply a partir de lo recibido</h3>
+<p>El <code>sniff</code> de pc2 ha terminado. Inspeccionamos el paquete y contestamos dándole la vuelta a las direcciones y copiando id, seq y datos (así lo exige el protocolo ICMP):</p>
+<div class="cmd"><span class="label">scapy en pc2</span><pre><span class="p">&gt;&gt;&gt; </span>p.show()
+<span class="p">&gt;&gt;&gt; </span>p[ICMP].id, p[ICMP].seq, p[Raw].load
+<span class="p">&gt;&gt;&gt; </span>eco_resp = Ether(dst=p[Ether].src, src=p[Ether].dst) / IP(src=p[IP].dst, dst=p[IP].src, ttl=64) / ICMP(type=0, code=0, id=p[ICMP].id, seq=p[ICMP].seq) / Raw(load=p[Raw].load)
+<span class="p">&gt;&gt;&gt; </span>sendp(eco_resp, iface="eth0")</pre></div>
+<p>pc1 recibe la respuesta:</p>
+<div class="cmd"><span class="label">scapy en pc1</span><pre><span class="p">&gt;&gt;&gt; </span>resp.show()
+<span class="p">&gt;&gt;&gt; </span>resp[ICMP].type
+<span class="p">&gt;&gt;&gt; </span>resp[Raw].load</pre></div>
+<pre class="out">0
+b'ping hecho a mano'</pre>
+<div class="ok"><p>Has hecho un ping completo escribiendo tú las 4 piezas. Esto es exactamente lo que hacen los kernels de ambos equipos en microsegundos cada vez que escribes <code>ping</code>.</p></div>
+
+<h3>Los campos de ICMP que has rellenado</h3>
+<div class="table-wrap"><table>
+<tr><th>Campo</th><th>Echo Request</th><th>Echo Reply</th><th>Para qué sirve</th></tr>
+<tr><td>type</td><td>8</td><td>0</td><td>Tipo de mensaje ICMP</td></tr>
+<tr><td>code</td><td>0</td><td>0</td><td>Subtipo</td></tr>
+<tr><td>checksum</td><td colspan="2">Lo calcula scapy</td><td>Detectar corrupción</td></tr>
+<tr><td>id</td><td colspan="2">igual en ambos (0x1234)</td><td>Distinguir pings de distintos procesos</td></tr>
+<tr><td>seq</td><td colspan="2">igual en ambos (1)</td><td>Número de ping (1, 2, 3…)</td></tr>
+<tr><td>datos</td><td colspan="2">se devuelven idénticos</td><td>Medir RTT, detectar corrupción</td></tr>
+</table></div>
+
+<h3>Variante: dejar que pc1 use su kernel</h3>
+<p>Pon una entrada ARP estática en pc1 (<code>ip neigh add 10.0.0.2 lladdr 02:00:00:00:00:02 dev eth0 nud permanent</code>) y lanza un ping normal desde pc1 con <code>ping -c 1 10.0.0.2</code>. En pc2 repite el paso 4 (sniff + respuesta). Verás que <code>ping</code> acepta tu respuesta artesanal y calcula el tiempo.</p>
+<div class="note"><p>El <code>id</code> lo elige el programa <code>ping</code>; por eso en pc2 lo copiamos del paquete recibido en lugar de inventarlo.</p></div>
+
+<h3>Restaurar pc2</h3>
+<div class="cmd"><span class="label">pc2</span><pre><span class="p">$ </span>sudo ip netns exec pc2 ip link set dev eth0 arp on
+<span class="p">$ </span>sudo ip netns exec pc2 sysctl -w net.ipv4.icmp_echo_ignore_all=0
+<span class="p">$ </span>sudo ip netns exec pc1 ip neigh flush dev eth0
+<span class="p">$ </span>sudo ip netns exec pc1 ping -c 2 10.0.0.2</pre></div>
+
+<!-- ============================================================ -->
+<h2 id="switch">2.6 Un switch con tres PCs</h2>
+<p>Con dos equipos basta un cable. Con más, hace falta un <strong>switch</strong>. En Linux un switch es un <strong>bridge</strong>. Lo meteremos en su propio namespace <code>sw</code> para que se vea como un aparato más.</p>
+<p>Empieza de cero:</p>
+<div class="cmd"><span class="label">host</span><pre><span class="p">$ </span>sudo ip netns del pc1
+<span class="p">$ </span>sudo ip netns del pc2</pre></div>
+
+<figure class="diagram">
+<svg viewBox="0 0 760 290" role="img" aria-label="Tres PCs conectados a un switch">
+  <rect x="270" y="20" width="220" height="90" class="box2" rx="10"/>
+  <text x="380" y="45" text-anchor="middle" class="title">sw (bridge br0)</text>
+  <text x="380" y="65" text-anchor="middle" class="small">tabla FDB: MAC → puerto</text>
+  <rect x="280" y="78" width="60" height="24" class="f-l2" rx="4"/><text x="310" y="95" text-anchor="middle" class="white mono">p1</text>
+  <rect x="350" y="78" width="60" height="24" class="f-l2" rx="4"/><text x="380" y="95" text-anchor="middle" class="white mono">p2</text>
+  <rect x="420" y="78" width="60" height="24" class="f-l2" rx="4"/><text x="450" y="95" text-anchor="middle" class="white mono">p3</text>
+  <rect x="40" y="190" width="180" height="80" class="box" rx="10"/><text x="130" y="215" text-anchor="middle" class="title">pc1</text><text x="130" y="235" text-anchor="middle" class="mono small">10.0.0.1 · …:01</text><text x="130" y="255" text-anchor="middle" class="mono small">eth0</text>
+  <rect x="290" y="190" width="180" height="80" class="box" rx="10"/><text x="380" y="215" text-anchor="middle" class="title">pc2</text><text x="380" y="235" text-anchor="middle" class="mono small">10.0.0.2 · …:02</text><text x="380" y="255" text-anchor="middle" class="mono small">eth0</text>
+  <rect x="540" y="190" width="180" height="80" class="box" rx="10"/><text x="630" y="215" text-anchor="middle" class="title">pc3</text><text x="630" y="235" text-anchor="middle" class="mono small">10.0.0.3 · …:03</text><text x="630" y="255" text-anchor="middle" class="mono small">eth0</text>
+  <path d="M310 102 L130 190" class="wire-l2"/><path d="M380 102 L380 190" class="wire-l2"/><path d="M450 102 L630 190" class="wire-l2"/>
+</svg>
+<figcaption>Topología del laboratorio 2.6. Los puertos del switch se llaman p1, p2, p3.</figcaption>
+</figure>
+
+<h3>Paso 1: crear los cuatro aparatos</h3>
+<div class="cmd"><span class="label">host</span><pre><span class="p">$ </span>sudo ip netns add sw
+<span class="p">$ </span>sudo ip netns add pc1
+<span class="p">$ </span>sudo ip netns add pc2
+<span class="p">$ </span>sudo ip netns add pc3</pre></div>
+
+<h3>Paso 2: crear el switch</h3>
+<div class="cmd"><span class="label">sw</span><pre><span class="p">$ </span>sudo ip netns exec sw ip link add br0 type bridge
+<span class="p">$ </span>sudo ip netns exec sw ip link set br0 up</pre></div>
+
+<h3>Paso 3: tres cables, creando cada extremo directamente en su namespace</h3>
+<p>Atajo: <code>ip link add</code> permite decir en qué namespace nace cada extremo.</p>
+<div class="cmd"><span class="label">host</span><pre><span class="p">$ </span>sudo ip link add eth0 netns pc1 type veth peer name p1 netns sw
+<span class="p">$ </span>sudo ip link add eth0 netns pc2 type veth peer name p2 netns sw
+<span class="p">$ </span>sudo ip link add eth0 netns pc3 type veth peer name p3 netns sw</pre></div>
+
+<h3>Paso 4: conectar los puertos al switch</h3>
+<p><code>master br0</code> = "este puerto pertenece al bridge br0".</p>
+<div class="cmd"><span class="label">sw</span><pre><span class="p">$ </span>sudo ip netns exec sw ip link set p1 master br0
+<span class="p">$ </span>sudo ip netns exec sw ip link set p2 master br0
+<span class="p">$ </span>sudo ip netns exec sw ip link set p3 master br0
+<span class="p">$ </span>sudo ip netns exec sw ip link set p1 up
+<span class="p">$ </span>sudo ip netns exec sw ip link set p2 up
+<span class="p">$ </span>sudo ip netns exec sw ip link set p3 up
+<span class="c"># Ver los puertos del bridge</span>
+<span class="p">$ </span>sudo ip netns exec sw bridge link show</pre></div>
+
+<h3>Paso 5: configurar los PCs</h3>
+<div class="cmd"><span class="label">pc1</span><pre><span class="p">$ </span>sudo ip netns exec pc1 ip link set eth0 address 02:00:00:00:00:01
+<span class="p">$ </span>sudo ip netns exec pc1 ip addr add 10.0.0.1/24 dev eth0
+<span class="p">$ </span>sudo ip netns exec pc1 ip link set eth0 up
+<span class="p">$ </span>sudo ip netns exec pc1 ip link set lo up</pre></div>
+<div class="cmd"><span class="label">pc2</span><pre><span class="p">$ </span>sudo ip netns exec pc2 ip link set eth0 address 02:00:00:00:00:02
+<span class="p">$ </span>sudo ip netns exec pc2 ip addr add 10.0.0.2/24 dev eth0
+<span class="p">$ </span>sudo ip netns exec pc2 ip link set eth0 up
+<span class="p">$ </span>sudo ip netns exec pc2 ip link set lo up</pre></div>
+<div class="cmd"><span class="label">pc3</span><pre><span class="p">$ </span>sudo ip netns exec pc3 ip link set eth0 address 02:00:00:00:00:03
+<span class="p">$ </span>sudo ip netns exec pc3 ip addr add 10.0.0.3/24 dev eth0
+<span class="p">$ </span>sudo ip netns exec pc3 ip link set eth0 up
+<span class="p">$ </span>sudo ip netns exec pc3 ip link set lo up</pre></div>
+
+<h3>Paso 6: cómo aprende un switch (tabla FDB)</h3>
+<p>Un switch apunta en su <strong>FDB</strong> (Forwarding DataBase) en qué puerto ha visto cada MAC <em>de origen</em>. Si no conoce el destino, <strong>inunda</strong> (flooding): reenvía la trama por todos los puertos menos por el que entró.</p>
+<div class="cmd"><span class="label">sw</span><pre><span class="c"># Antes de tráfico: solo las MAC propias de los puertos (marcadas "permanent")</span>
+<span class="p">$ </span>sudo ip netns exec sw bridge fdb show br br0</pre></div>
+<p>Pon a pc3 a escuchar (es un "espía" que no participa) y haz ping de pc1 a pc2:</p>
+<div class="cmd"><span class="label">pc3 · terminal A</span><pre><span class="p">$ </span>sudo ip netns exec pc3 tcpdump -i eth0 -e -n</pre></div>
+<div class="cmd"><span class="label">pc1 · terminal B</span><pre><span class="p">$ </span>sudo ip netns exec pc1 ping -c 3 10.0.0.2</pre></div>
+<p>pc3 <strong>solo ve el ARP Request</strong> (broadcast). Los pings, que van en unicast a una MAC ya aprendida, no le llegan. Ahora mira la FDB:</p>
+<div class="cmd"><span class="label">sw</span><pre><span class="p">$ </span>sudo ip netns exec sw bridge fdb show br br0 dynamic</pre></div>
+<pre class="out">02:00:00:00:00:01 dev p1 master br0
+02:00:00:00:00:02 dev p2 master br0</pre>
+<div class="table-wrap"><table>
+<tr><th>Situación</th><th>Qué hace el switch</th></tr>
+<tr><td>MAC destino en la FDB</td><td>Reenvía solo por ese puerto (forwarding)</td></tr>
+<tr><td>MAC destino desconocida</td><td>Inunda por todos los puertos excepto el de entrada (unknown unicast flooding)</td></tr>
+<tr><td>Broadcast <code>ff:ff:…</code></td><td>Inunda siempre</td></tr>
+<tr><td>Destino en el mismo puerto de entrada</td><td>Descarta (filtering)</td></tr>
+<tr><td>Entrada sin tráfico durante el <em>ageing time</em></td><td>La borra (300 s por defecto)</td></tr>
+</table></div>
+<div class="cmd"><span class="label">sw</span><pre><span class="c"># Ver parámetros del bridge (ageing_time está en centésimas de segundo)</span>
+<span class="p">$ </span>sudo ip netns exec sw ip -d link show br0
+<span class="c"># Bajar el tiempo de envejecimiento a 10 s para verlo caducar</span>
+<span class="p">$ </span>sudo ip netns exec sw ip link set br0 type bridge ageing_time 1000
+<span class="c"># Añadir una entrada estática (como en un switch gestionable)</span>
+<span class="p">$ </span>sudo ip netns exec sw bridge fdb add 02:00:00:00:00:03 dev p3 master static
+<span class="c"># Borrar la entrada</span>
+<span class="p">$ </span>sudo ip netns exec sw bridge fdb del 02:00:00:00:00:03 dev p3 master static</pre></div>
+
+<h3>Experimento: el switch "tonto" (hub)</h3>
+<p>Si desactivas el aprendizaje de MAC en los puertos, el bridge no sabe dónde está nadie y se comporta como un <strong>hub</strong>: inunda todo. Vacía la FDB, repite el ping de pc1 a pc2 y pc3 verá también los ICMP.</p>
+<div class="cmd"><span class="label">sw</span><pre><span class="p">$ </span>sudo ip netns exec sw ip link set p1 type bridge_slave learning off
+<span class="p">$ </span>sudo ip netns exec sw ip link set p2 type bridge_slave learning off
+<span class="p">$ </span>sudo ip netns exec sw ip link set p3 type bridge_slave learning off
+<span class="p">$ </span>sudo ip netns exec sw ip link set br0 type bridge fdb_flush
+<span class="c"># Volver a la normalidad</span>
+<span class="p">$ </span>sudo ip netns exec sw ip link set p1 type bridge_slave learning on
+<span class="p">$ </span>sudo ip netns exec sw ip link set p2 type bridge_slave learning on
+<span class="p">$ </span>sudo ip netns exec sw ip link set p3 type bridge_slave learning on
+<span class="p">$ </span>sudo ip netns exec sw ip link set br0 type bridge ageing_time 30000</pre></div>
+
+<h3>Desconectar un puerto</h3>
+<div class="cmd"><span class="label">sw</span><pre><span class="p">$ </span>sudo ip netns exec sw ip link set p2 down
+<span class="p">$ </span>sudo ip netns exec pc1 ping -c 2 10.0.0.2
+<span class="p">$ </span>sudo ip netns exec sw ip link set p2 up</pre></div>
+
+<!-- ============================================================ -->
+<h2 id="vlan">2.7 VLAN: varias redes en un mismo switch</h2>
+<p>Una <strong>VLAN</strong> divide un switch en varios switches lógicos. Las tramas de VLAN 10 nunca llegan a puertos de VLAN 20. Usaremos el mismo switch: pc1 y pc2 en VLAN 10, pc3 en VLAN 20.</p>
+
+<figure class="diagram">
+<svg viewBox="0 0 760 230" role="img" aria-label="Switch con VLAN 10 y VLAN 20">
+  <rect x="200" y="20" width="360" height="80" class="box2" rx="10"/>
+  <text x="380" y="45" text-anchor="middle" class="title">sw · br0 con vlan_filtering</text>
+  <rect x="215" y="62" width="100" height="28" class="f-l2" rx="4"/><text x="265" y="81" text-anchor="middle" class="white mono">p1 · VLAN 10</text>
+  <rect x="330" y="62" width="100" height="28" class="f-l2" rx="4"/><text x="380" y="81" text-anchor="middle" class="white mono">p2 · VLAN 10</text>
+  <rect x="445" y="62" width="100" height="28" class="f-l5" rx="4"/><text x="495" y="81" text-anchor="middle" class="white mono">p3 · VLAN 20</text>
+  <rect x="60" y="150" width="160" height="60" class="box" rx="8"/><text x="140" y="185" text-anchor="middle">pc1</text>
+  <rect x="300" y="150" width="160" height="60" class="box" rx="8"/><text x="380" y="185" text-anchor="middle">pc2</text>
+  <rect x="540" y="150" width="160" height="60" class="box" rx="8"/><text x="620" y="185" text-anchor="middle">pc3</text>
+  <path d="M265 90 L140 150" class="wire-l2"/><path d="M380 90 L380 150" class="wire-l2"/><path d="M495 90 L620 150" class="wire-l5"/>
+  <text x="620" y="226" text-anchor="middle" class="small">aislado de pc1 y pc2</text>
+</svg>
+<figcaption>VLAN 10 (azul) y VLAN 20 (morado) en el mismo switch.</figcaption>
+</figure>
+
+<div class="cmd"><span class="label">sw</span><pre><span class="c"># Activar el filtrado por VLAN en el bridge</span>
+<span class="p">$ </span>sudo ip netns exec sw ip link set br0 type bridge vlan_filtering 1
+<span class="c"># Por defecto todos los puertos están en la VLAN 1. Míralo:</span>
+<span class="p">$ </span>sudo ip netns exec sw bridge vlan show
+<span class="c"># p1 y p2: puertos de acceso en VLAN 10 (pvid = VLAN para lo que entra sin etiqueta; untagged = sale sin etiqueta)</span>
+<span class="p">$ </span>sudo ip netns exec sw bridge vlan add dev p1 vid 10 pvid untagged
+<span class="p">$ </span>sudo ip netns exec sw bridge vlan del dev p1 vid 1
+<span class="p">$ </span>sudo ip netns exec sw bridge vlan add dev p2 vid 10 pvid untagged
+<span class="p">$ </span>sudo ip netns exec sw bridge vlan del dev p2 vid 1
+<span class="c"># p3: VLAN 20</span>
+<span class="p">$ </span>sudo ip netns exec sw bridge vlan add dev p3 vid 20 pvid untagged
+<span class="p">$ </span>sudo ip netns exec sw bridge vlan del dev p3 vid 1
+<span class="p">$ </span>sudo ip netns exec sw bridge vlan show</pre></div>
+<div class="cmd"><span class="label">pruebas</span><pre><span class="c"># Funciona (misma VLAN)</span>
+<span class="p">$ </span>sudo ip netns exec pc1 ping -c 2 10.0.0.2
+<span class="c"># No funciona (distinta VLAN, aunque misma subred IP)</span>
+<span class="p">$ </span>sudo ip netns exec pc1 ping -c 2 10.0.0.3</pre></div>
+
+<h3>Puerto troncal (trunk) y etiquetas 802.1Q</h3>
+<p>Un puerto <strong>trunk</strong> transporta varias VLAN a la vez añadiendo una etiqueta de 4 bytes a cada trama. Convertimos p3 en troncal (VLAN 10 y 20 etiquetadas) y en pc3 creamos dos subinterfaces, una por VLAN.</p>
+<div class="cmd"><span class="label">sw</span><pre><span class="p">$ </span>sudo ip netns exec sw bridge vlan del dev p3 vid 20
+<span class="p">$ </span>sudo ip netns exec sw bridge vlan add dev p3 vid 10
+<span class="p">$ </span>sudo ip netns exec sw bridge vlan add dev p3 vid 20</pre></div>
+<div class="cmd"><span class="label">pc3</span><pre><span class="p">$ </span>sudo ip netns exec pc3 ip addr flush dev eth0
+<span class="p">$ </span>sudo ip netns exec pc3 ip link add link eth0 name eth0.10 type vlan id 10
+<span class="p">$ </span>sudo ip netns exec pc3 ip link add link eth0 name eth0.20 type vlan id 20
+<span class="p">$ </span>sudo ip netns exec pc3 ip addr add 10.0.0.3/24 dev eth0.10
+<span class="p">$ </span>sudo ip netns exec pc3 ip addr add 10.20.0.3/24 dev eth0.20
+<span class="p">$ </span>sudo ip netns exec pc3 ip link set eth0.10 up
+<span class="p">$ </span>sudo ip netns exec pc3 ip link set eth0.20 up</pre></div>
+<div class="cmd"><span class="label">pc3</span><pre><span class="c"># Mira las etiquetas en el cable físico (eth0)</span>
+<span class="p">$ </span>sudo ip netns exec pc3 tcpdump -i eth0 -e -n</pre></div>
+<div class="cmd"><span class="label">pc1</span><pre><span class="p">$ </span>sudo ip netns exec pc1 ping -c 2 10.0.0.3</pre></div>
+<pre class="out">02:00:00:00:00:01 &gt; 02:00:00:00:00:03, ethertype 802.1Q (0x8100), length 102: vlan 10, p 0, ethertype IPv4 (0x0800), 10.0.0.1 &gt; 10.0.0.3: ICMP echo request ...</pre>
+<div class="table-wrap"><table>
+<tr><th>Tipo de puerto</th><th>VLANs</th><th>¿Etiqueta en el cable?</th><th>Uso típico</th></tr>
+<tr><td>Acceso (access)</td><td>Una</td><td>No</td><td>PCs, impresoras</td></tr>
+<tr><td>Troncal (trunk)</td><td>Varias</td><td>Sí, 802.1Q (salvo la nativa/pvid)</td><td>Switch-switch, switch-router, servidores de virtualización</td></tr>
+</table></div>
+
+<!-- ============================================================ -->
+<h2 id="mas">2.8 Más cosas de capa 2</h2>
+
+<h3>MTU y tramas jumbo</h3>
+<div class="cmd"><span class="label">pc1 / pc2</span><pre><span class="c"># Un ping de 1472 bytes de datos + 8 ICMP + 20 IP = 1500 justo. -M do prohíbe fragmentar</span>
+<span class="p">$ </span>sudo ip netns exec pc1 ping -c 1 -M do -s 1472 10.0.0.2
+<span class="c"># 1473 ya no cabe</span>
+<span class="p">$ </span>sudo ip netns exec pc1 ping -c 1 -M do -s 1473 10.0.0.2
+<span class="c"># Subir la MTU a 9000 (jumbo). Debe hacerse en todos los equipos y puertos del segmento</span>
+<span class="p">$ </span>sudo ip netns exec pc1 ip link set eth0 mtu 9000</pre></div>
+<div class="warn"><p>Si cambias la MTU solo en un lado, los paquetes grandes se pierden en silencio. Es uno de los fallos más típicos en redes reales.</p></div>
+
+<h3>Cambiar la MAC de un equipo</h3>
+<div class="cmd"><span class="label">pc2</span><pre><span class="p">$ </span>sudo ip netns exec pc2 ip link set eth0 down
+<span class="p">$ </span>sudo ip netns exec pc2 ip link set eth0 address 02:00:00:00:00:22
+<span class="p">$ </span>sudo ip netns exec pc2 ip link set eth0 up
+<span class="c"># Anunciar la nueva MAC para que los vecinos actualicen su tabla ARP</span>
+<span class="p">$ </span>sudo ip netns exec pc2 arping -I eth0 -U -c 1 10.0.0.2
+<span class="p">$ </span>sudo ip netns exec pc1 ip neigh show</pre></div>
+
+<h3>Spanning Tree (STP): evitar bucles</h3>
+<p>Si unes dos switches con dos cables, las tramas broadcast dan vueltas para siempre (tormenta de broadcast). STP bloquea los enlaces redundantes.</p>
+<div class="cmd"><span class="label">sw</span><pre><span class="p">$ </span>sudo ip netns exec sw ip link set br0 type bridge stp_state 1
+<span class="c"># Ver el estado de cada puerto: forwarding, blocking, learning…</span>
+<span class="p">$ </span>sudo ip netns exec sw bridge link show</pre></div>
+<details><summary>Laboratorio opcional: bucle con dos switches</summary>
+<p>Crea un segundo switch <code>sw2</code> con su bridge, únelo a <code>sw</code> con dos cables (dos pares veth) y conecta un PC a cada switch. Sin STP, un solo <code>arping</code> dispara los contadores de <code>ip -s link</code> a miles de tramas por segundo. Activa <code>stp_state 1</code> en ambos bridges, espera ~30 s y verás con <code>bridge link show</code> que uno de los puertos queda en estado <code>blocking</code>.</p>
+</details>
+
+<h3>Resumen de comandos de capa 2</h3>
+<div class="table-wrap"><table>
+<tr><th>Quiero…</th><th>Comando</th></tr>
+<tr><td>Ver interfaces y MAC</td><td><code>ip link show</code></td></tr>
+<tr><td>Cambiar MAC</td><td><code>ip link set eth0 address XX:…</code></td></tr>
+<tr><td>Encender/apagar</td><td><code>ip link set eth0 up|down</code></td></tr>
+<tr><td>Estadísticas</td><td><code>ip -s link show eth0</code></td></tr>
+<tr><td>Tabla ARP</td><td><code>ip neigh show</code></td></tr>
+<tr><td>Preguntar una MAC</td><td><code>arping -I eth0 IP</code></td></tr>
+<tr><td>Ver tramas con MAC</td><td><code>tcpdump -i eth0 -e -n</code></td></tr>
+<tr><td>Crear switch</td><td><code>ip link add br0 type bridge</code></td></tr>
+<tr><td>Conectar puerto</td><td><code>ip link set p1 master br0</code></td></tr>
+<tr><td>Tabla del switch</td><td><code>bridge fdb show br br0</code></td></tr>
+<tr><td>VLAN</td><td><code>bridge vlan add dev p1 vid 10 pvid untagged</code></td></tr>
+<tr><td>Fabricar tramas</td><td>scapy: <code>sendp(Ether()/…, iface="eth0")</code></td></tr>
+</table></div>
+
+<h2 id="limpieza">Limpieza</h2>
+<p>Borrar un namespace borra también sus interfaces (y con ellas su pareja veth).</p>
+<div class="cmd"><span class="label">host</span><pre><span class="p">$ </span>sudo ip netns del pc1
+<span class="p">$ </span>sudo ip netns del pc2
+<span class="p">$ </span>sudo ip netns del pc3
+<span class="p">$ </span>sudo ip netns del sw
+<span class="p">$ </span>ip netns list</pre></div>
+
+<div class="pager"><a href="index.html">← Inicio</a><a href="capa3.html">Capa 3: Red →</a></div>
+</main>
+</div>
+<footer>netns·lab · Capa 2</footer>
+</body>
+</html>

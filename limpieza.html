@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chuleta y limpieza</title>
+<meta name="description" content="Resumen de comandos de ip netns, ip, bridge, tcpdump, iptables, nmap y scapy, solución de problemas y cómo limpiar el laboratorio.">
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/app.js"></script>
+</head>
+<body>
+<header class="topbar"><div class="topbar-inner">
+  <a class="brand" href="index.html">netns<span>·</span>lab</a>
+  <nav class="topnav">
+    <a href="index.html">Inicio</a>
+    <a href="capa2.html">Capa 2</a>
+    <a href="capa3.html">Capa 3</a>
+    <a href="capa4.html">Capa 4</a>
+    <a href="capa5.html">Capas 5-7</a>
+    <a href="permisos.html">Permisos</a>
+    <a href="limpieza.html" class="active">Chuleta</a>
+  </nav>
+  <button id="theme-toggle" aria-label="Cambiar tema">◐</button>
+</div></header>
+
+<div class="layout">
+<aside class="toc"><h4>Referencia</h4><ol></ol></aside>
+<main>
+<span class="layer-tag tag-gen">Referencia</span>
+<h1>Chuleta de comandos y limpieza</h1>
+<p class="lead">Todo lo esencial del laboratorio en una página. Añade <code>sudo ip netns exec NOMBRE</code> delante para ejecutar cualquier comando dentro de un namespace.</p>
+
+<h2 id="netns">Namespaces</h2>
+<div class="table-wrap"><table>
+<tr><th>Acción</th><th>Comando</th></tr>
+<tr><td>Crear / borrar</td><td><code>ip netns add pc1</code> · <code>ip netns del pc1</code></td></tr>
+<tr><td>Listar</td><td><code>ip netns list</code></td></tr>
+<tr><td>Ejecutar dentro</td><td><code>ip netns exec pc1 COMANDO</code></td></tr>
+<tr><td>Shell dentro</td><td><code>ip netns exec pc1 bash</code></td></tr>
+<tr><td>¿En qué namespace estoy?</td><td><code>ip netns identify</code></td></tr>
+<tr><td>Procesos de un namespace</td><td><code>ip netns pids pc1</code></td></tr>
+<tr><td>Ficheros propios (resolv.conf, hosts)</td><td><code>/etc/netns/pc1/resolv.conf</code>, <code>/etc/netns/pc1/hosts</code></td></tr>
+</table></div>
+
+<h2 id="capa2">Capa 2</h2>
+<div class="table-wrap"><table>
+<tr><th>Acción</th><th>Comando</th></tr>
+<tr><td>Cable entre dos namespaces</td><td><code>ip link add eth0 netns pc1 type veth peer name eth0 netns pc2</code></td></tr>
+<tr><td>Mover una interfaz</td><td><code>ip link set veth1 netns pc1</code></td></tr>
+<tr><td>Renombrar / MAC / MTU</td><td><code>ip link set X name eth0</code> · <code>address 02:…</code> · <code>mtu 9000</code></td></tr>
+<tr><td>Encender / apagar</td><td><code>ip link set eth0 up</code> · <code>down</code></td></tr>
+<tr><td>Ver resumido</td><td><code>ip -br link</code> · <code>ip -br addr</code></td></tr>
+<tr><td>Estadísticas</td><td><code>ip -s link show eth0</code></td></tr>
+<tr><td>Tabla ARP</td><td><code>ip neigh show</code> · <code>ip neigh flush dev eth0</code></td></tr>
+<tr><td>ARP estática</td><td><code>ip neigh add IP lladdr MAC dev eth0 nud permanent</code></td></tr>
+<tr><td>ARP a mano</td><td><code>arping -I eth0 -c 3 IP</code> · <code>-D</code> duplicados · <code>-U</code> gratuito</td></tr>
+<tr><td>Switch</td><td><code>ip link add br0 type bridge</code> · <code>ip link set p1 master br0</code></td></tr>
+<tr><td>Tabla del switch</td><td><code>bridge fdb show br br0</code></td></tr>
+<tr><td>VLAN en el switch</td><td><code>ip link set br0 type bridge vlan_filtering 1</code> · <code>bridge vlan add dev p1 vid 10 pvid untagged</code></td></tr>
+<tr><td>Subinterfaz VLAN</td><td><code>ip link add link eth0 name eth0.10 type vlan id 10</code></td></tr>
+<tr><td>STP</td><td><code>ip link set br0 type bridge stp_state 1</code></td></tr>
+</table></div>
+
+<h2 id="capa3">Capa 3</h2>
+<div class="table-wrap"><table>
+<tr><th>Acción</th><th>Comando</th></tr>
+<tr><td>Poner / quitar IP</td><td><code>ip addr add 10.0.0.1/24 dev eth0</code> · <code>ip addr del …</code> · <code>ip addr flush dev eth0</code></td></tr>
+<tr><td>Rutas</td><td><code>ip route</code> · <code>ip route add RED via GW</code> · <code>ip route add default via GW</code></td></tr>
+<tr><td>Cambiar / borrar ruta</td><td><code>ip route replace …</code> · <code>ip route del …</code></td></tr>
+<tr><td>¿Por dónde saldría?</td><td><code>ip route get IP</code></td></tr>
+<tr><td>Rutas especiales</td><td><code>ip route add blackhole|unreachable|prohibit RED</code></td></tr>
+<tr><td>Activar router</td><td><code>sysctl -w net.ipv4.ip_forward=1</code></td></tr>
+<tr><td>Diagnóstico</td><td><code>ping -c 3 -t TTL -s TAM -M do IP</code> · <code>traceroute -n IP</code> · <code>tracepath IP</code></td></tr>
+<tr><td>Rutas por políticas</td><td><code>ip rule add from RED table 100</code> · <code>ip route add default via GW table 100</code></td></tr>
+<tr><td>NAT salida</td><td><code>iptables -t nat -A POSTROUTING -o wan -j MASQUERADE</code></td></tr>
+<tr><td>Abrir puerto</td><td><code>iptables -t nat -A PREROUTING -i wan -p tcp --dport 80 -j DNAT --to-destination IP:PUERTO</code></td></tr>
+<tr><td>Conexiones seguidas</td><td><code>conntrack -L</code> · <code>conntrack -E</code></td></tr>
+</table></div>
+
+<h2 id="iptables">iptables</h2>
+<div class="table-wrap"><table>
+<tr><th>Acción</th><th>Comando</th></tr>
+<tr><td>Ver con contadores y números</td><td><code>iptables -L -n -v --line-numbers</code> · <code>iptables -t nat -L -n -v</code></td></tr>
+<tr><td>Política por defecto</td><td><code>iptables -P FORWARD DROP</code></td></tr>
+<tr><td>Con estado</td><td><code>iptables -A FORWARD -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT</code></td></tr>
+<tr><td>Permitir un servicio</td><td><code>iptables -A FORWARD -s ORIGEN -d DESTINO -p tcp --dport 80 -j ACCEPT</code></td></tr>
+<tr><td>Rechazar avisando</td><td><code>-j REJECT --reject-with tcp-reset</code> / <code>icmp-port-unreachable</code></td></tr>
+<tr><td>Registrar</td><td><code>-m limit --limit 5/min -j LOG --log-prefix "FW: "</code> (en el host: <code>sysctl -w net.netfilter.nf_log_all_netns=1</code>)</td></tr>
+<tr><td>Por usuario</td><td><code>iptables -A OUTPUT -m owner --uid-owner USUARIO -j …</code></td></tr>
+<tr><td>Insertar / borrar / vaciar</td><td><code>-I CADENA N</code> · <code>-D CADENA N</code> · <code>-F</code></td></tr>
+<tr><td>Guardar / restaurar</td><td><code>iptables-save &gt; f</code> · <code>iptables-restore &lt; f</code></td></tr>
+</table></div>
+
+<h2 id="capa4">Capa 4 y aplicación</h2>
+<div class="table-wrap"><table>
+<tr><th>Acción</th><th>Comando</th></tr>
+<tr><td>Quién escucha</td><td><code>ss -tulpn</code></td></tr>
+<tr><td>Conexiones y detalle TCP</td><td><code>ss -tanp</code> · <code>ss -tni</code> · <code>ss -s</code></td></tr>
+<tr><td>Servidor / cliente TCP</td><td><code>nc -l 5000</code> · <code>nc IP 5000</code></td></tr>
+<tr><td>Servidor / cliente UDP</td><td><code>nc -lu 6000</code> · <code>nc -u IP 6000</code></td></tr>
+<tr><td>Comprobar un puerto</td><td><code>nc -vz -w 3 IP PUERTO</code></td></tr>
+<tr><td>Reenviar un puerto</td><td><code>socat TCP-LISTEN:9001,fork,reuseaddr TCP:IP:80</code></td></tr>
+<tr><td>Simular red mala</td><td><code>tc qdisc add dev eth0 root netem delay 100ms loss 5%</code> · <code>tc qdisc del dev eth0 root</code></td></tr>
+<tr><td>Limitar ancho de banda</td><td><code>tc qdisc add dev eth0 root tbf rate 1mbit burst 32kbit latency 400ms</code></td></tr>
+<tr><td>Web rápida</td><td><code>python -m http.server 80 --directory DIR</code></td></tr>
+<tr><td>HTTP</td><td><code>curl -v URL</code> · <code>nc -C HOST 80</code></td></tr>
+<tr><td>DNS</td><td><code>dig @SERVIDOR NOMBRE TIPO</code> · <code>dig -x IP</code></td></tr>
+<tr><td>TLS</td><td><code>openssl s_server -accept 443 -cert C -key K -www</code> · <code>openssl s_client -connect H:443</code></td></tr>
+<tr><td>DHCP / DNS server</td><td><code>dnsmasq --no-daemon --interface=eth0 --bind-interfaces --dhcp-range=…</code></td></tr>
+<tr><td>VPN</td><td><code>ip link add wg0 type wireguard</code> · <code>wg set wg0 …</code> · <code>wg show</code></td></tr>
+</table></div>
+
+<h2 id="tcpdump">tcpdump y nmap</h2>
+<div class="table-wrap"><table>
+<tr><th>Acción</th><th>Comando</th></tr>
+<tr><td>Captura básica con MAC</td><td><code>tcpdump -i eth0 -n -e</code></td></tr>
+<tr><td>Ver contenido</td><td><code>-X</code> (hex) · <code>-A</code> (texto) · <code>-v</code> (detalle) · <code>-S</code> (seq absolutos)</td></tr>
+<tr><td>Filtros</td><td><code>arp</code> · <code>icmp</code> · <code>host IP</code> · <code>port 53</code> · <code>net RED</code> · <code>'tcp[tcpflags] &amp; tcp-syn != 0'</code></td></tr>
+<tr><td>Guardar / leer</td><td><code>-w f.pcap</code> · <code>-r f.pcap</code></td></tr>
+<tr><td>Descubrir equipos</td><td><code>nmap -sn RED/24</code></td></tr>
+<tr><td>Puertos</td><td><code>nmap -p 22,80 --reason IP</code> · <code>-sS</code> · <code>-sT</code> · <code>-sU</code> · <code>-sV</code></td></tr>
+<tr><td>Oferta DHCP</td><td><code>nmap --script broadcast-dhcp-discover -e eth0</code></td></tr>
+</table></div>
+
+<h2 id="scapy">scapy</h2>
+<div class="table-wrap"><table>
+<tr><th>Acción</th><th>Código</th></tr>
+<tr><td>Abrir en un namespace</td><td><code>sudo ip netns exec pc1 scapy</code></td></tr>
+<tr><td>Construir capas</td><td><code>Ether()/ARP()</code> · <code>IP()/ICMP()</code> · <code>IP()/TCP()</code> · <code>IP()/UDP()/DNS()</code></td></tr>
+<tr><td>Inspeccionar</td><td><code>p.show()</code> · <code>p.show2()</code> · <code>hexdump(p)</code> · <code>p.summary()</code> · <code>ls(TCP)</code></td></tr>
+<tr><td>Enviar capa 2</td><td><code>sendp(p, iface="eth0")</code> · con respuesta: <code>srp1(p, iface="eth0")</code></td></tr>
+<tr><td>Enviar capa 3</td><td><code>send(p)</code> · con respuesta: <code>sr1(p, timeout=2)</code></td></tr>
+<tr><td>Recibir</td><td><code>sniff(iface="eth0", filter="icmp", count=1)</code></td></tr>
+<tr><td>Fragmentar</td><td><code>fragment(p, fragsize=500)</code></td></tr>
+</table></div>
+
+<h2 id="problemas">Solución de problemas</h2>
+<div class="table-wrap"><table>
+<tr><th>Síntoma</th><th>Causa probable</th><th>Comprobar</th></tr>
+<tr><td><code>Network is unreachable</code></td><td>No hay ruta (falta default o IP)</td><td><code>ip route</code>, <code>ip route get IP</code></td></tr>
+<tr><td><code>Destination Host Unreachable</code></td><td>Nadie responde al ARP: equipo apagado, IP mal, interfaz <code>down</code></td><td><code>ip neigh</code> (FAILED), <code>ip link</code></td></tr>
+<tr><td>Ping sin respuesta ni error</td><td>Falta ruta de vuelta, <code>ip_forward=0</code>, cortafuegos DROP</td><td><code>tcpdump</code> en cada salto: ¿dónde desaparece?</td></tr>
+<tr><td><code>NO-CARRIER</code> / <code>LOWERLAYERDOWN</code></td><td>El otro extremo del veth está apagado</td><td><code>ip link</code> en el otro namespace</td></tr>
+<tr><td><code>RTNETLINK answers: File exists</code></td><td>La IP, ruta o interfaz ya existía</td><td>Usa <code>replace</code> o borra antes</td></tr>
+<tr><td><code>Cannot open network namespace</code></td><td>El namespace no existe o lo borraste</td><td><code>ip netns list</code></td></tr>
+<tr><td><code>Connection refused</code></td><td>Nadie escucha en ese puerto (RST) o REJECT</td><td><code>ss -tlpn</code> en el servidor</td></tr>
+<tr><td>Conexión se queda colgada</td><td>DROP en un cortafuegos o paquete perdido</td><td><code>iptables -L -v</code> (contadores)</td></tr>
+<tr><td>Paquetes grandes fallan, pequeños no</td><td>MTU distinta en algún enlace</td><td><code>ping -M do -s 1472</code>, <code>tracepath</code></td></tr>
+<tr><td>El servidor responde a sí mismo pero no fuera</td><td>Escucha en <code>127.0.0.1</code></td><td><code>ss -tlpn</code> (columna Local Address)</td></tr>
+<tr><td>Address already in use</td><td>Otro proceso (quizá de otra práctica) usa el puerto</td><td><code>ss -tlpn</code>, <code>ip netns pids NOMBRE</code></td></tr>
+</table></div>
+
+<h2 id="limpieza">Limpieza total</h2>
+<p>Para cada namespace que quede, primero mira si tiene procesos vivos (servidores, dnsmasq, sshd…):</p>
+<div class="cmd"><span class="label">host</span><pre><span class="p">$ </span>ip netns list
+<span class="p">$ </span>sudo ip netns pids pc1
+<span class="c"># Si sale algún PID, termínalo</span>
+<span class="p">$ </span>sudo kill PID
+<span class="c"># Borrar un namespace</span>
+<span class="p">$ </span>sudo ip netns del pc1</pre></div>
+<p>Atajo para borrar <strong>todos</strong> los namespaces con nombre de una vez (si usas otras herramientas que creen namespaces en <code>/run/netns</code>, también los borrará):</p>
+<div class="cmd"><span class="label">host</span><pre><span class="p">$ </span>sudo ip -all netns delete
+<span class="p">$ </span>ip netns list</pre></div>
+<p>Ficheros que el laboratorio puede haber dejado:</p>
+<div class="cmd"><span class="label">host</span><pre><span class="p">$ </span>ls -d /etc/netns/* /tmp/lab-* ~/lab-tcpdump
+<span class="c"># Borra solo las carpetas del laboratorio que aparezcan arriba</span>
+<span class="p">$ </span>sudo rm -r /etc/netns/cli1 /etc/netns/cli2 /etc/netns/pc1
+<span class="p">$ </span>sudo rm -rf /tmp/lab-*</pre></div>
+<p>Y los cambios del apartado de permisos (si lo hiciste):</p>
+<div class="cmd"><span class="label">host</span><pre><span class="p">$ </span>sudo rm /etc/sudoers.d/lab-redes
+<span class="p">$ </span>sudo userdel -r alumno
+<span class="p">$ </span>sudo groupdel redes
+<span class="p">$ </span>rm ~/lab-tcpdump</pre></div>
+<div class="ok"><p>Tu red real nunca se ha tocado salvo en el extra opcional "dar Internet real a un namespace" de la capa 3, que tiene sus propios pasos para deshacerlo.</p></div>
+
+<div class="pager"><a href="permisos.html">← Permisos</a><a href="index.html">Inicio</a></div>
+</main>
+</div>
+<footer>netns·lab · Chuleta y limpieza</footer>
+</body>
+</html>
